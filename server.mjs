@@ -49,32 +49,56 @@ async function sb(table, method = "GET", params = {}, body) {
 }
 
 async function writeStatus(status, message = null) {
+  const payload = {
+    checked_at: new Date().toISOString(),
+    status,
+    last_event_at: new Date().toISOString(),
+    error_message: message,
+    metadata: {}
+  };
   try {
-    await sb("provider_status", "POST", { on_conflict: "provider,dataset" }, {
-      provider: "BINANCE",
-      dataset: "engine",
-      checked_at: new Date().toISOString(),
-      status,
-      last_event_at: new Date().toISOString(),
-      error_message: message,
-      metadata: {}
+    const existing = await sb("provider_status", "GET", {
+      select: "provider",
+      provider: "eq.BINANCE",
+      dataset: "eq.engine",
+      limit: "1"
     });
-  } catch (e) {
-    try {
-      await sb("provider_status", "PATCH", { provider: "eq.BINANCE", dataset: "eq.engine" }, {
-        checked_at: new Date().toISOString(),
-        status,
-        last_event_at: new Date().toISOString(),
-        error_message: message,
-        metadata: {}
+    if (existing.length) {
+      await sb("provider_status", "PATCH", {
+        provider: "eq.BINANCE",
+        dataset: "eq.engine"
+      }, payload);
+    } else {
+      await sb("provider_status", "POST", {}, {
+        provider: "BINANCE",
+        dataset: "engine",
+        ...payload
       });
-    } catch (patchError) { recordError(patchError); }
+    }
+  } catch (e) {
+    recordError(e);
   }
 }
 async function refreshUniverse() {
   log("universe_refresh_start");
   const r = await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false");
-  if (!r.ok) throw new Error("CoinGecko " + r.status);
+  if (!r.ok) {
+    const fallback = await sb("assets", "GET", {
+      select: "asset_id,symbol,metadata",
+      active: "eq.true",
+      limit: "50"
+    });
+    if (fallback.length) {
+      state.assets = fallback.slice(0, 30).map((x, i) => ({
+        id: x.asset_id,
+        symbol: x.symbol.toUpperCase(),
+        rank: Number(x.metadata?.rank || i + 1)
+      }));
+      log("universe_refresh_fallback", { assets: state.assets.length, source: "supabase" });
+      return;
+    }
+    throw new Error("CoinGecko " + r.status);
+  }
   const coins = (await r.json())
     .filter(x => !x.symbol?.includes("usd") && !x.name?.toLowerCase().includes("wrapped"))
     .slice(0, 30);
