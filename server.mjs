@@ -21,7 +21,8 @@ const state = {
   lastDeriv: null,
   assets: [],
   errors: [],
-  counts: { trades: 0, books: 0, derivatives: 0 }
+  counts: { trades: 0, books: 0, derivatives: 0 },
+  market: new Map()
 };
 
 function log(message, meta = {}) {
@@ -247,6 +248,9 @@ async function pollMarketData() {
     const asset = state.assets.find(a => a.symbol.toUpperCase() + "USDT" === String(x.symbol).toUpperCase());
     if (!asset) continue;
     const now = new Date().toISOString();
+    const price = Number(x.lastPrice || x.markPrice || x.indexPrice);
+    const prev = state.market.get(asset.id) || {};
+    state.market.set(asset.id, { ...asset, price, markPrice: Number(x.markPrice || 0), indexPrice: Number(x.indexPrice || 0), change24h: Number(x.price24hPcnt || x.change24h || 0) * (Math.abs(Number(x.price24hPcnt || x.change24h || 0)) < 1 ? 100 : 1), volume24h: Number(x.volume24h || 0), turnover24h: Number(x.turnover24h || 0), high24h: Number(x.highPrice24h || 0), low24h: Number(x.lowPrice24h || 0), updatedAt: now });
     if (x.fundingRate !== undefined) {
       await sb("funding", "POST", {}, {
         asset_id: asset.id, exchange: "BYBIT", observed_at: now,
@@ -288,7 +292,8 @@ async function dashboardData() {
       lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv,
       counts: state.counts, errors: state.errors.slice(-5)
     },
-    assets: state.assets, signals, paperTrades, providers
+    assets: state.assets.map(a => state.market.get(a.id) || a), signals, paperTrades, providers,
+    market: Array.from(state.market.values()),
   };
 }
 
@@ -419,7 +424,7 @@ const server = http.createServer(async (req, res) => {
       }, state.ready ? 200 : 503);
     }
     if (path === "/api/market") return sendJson(res, {
-      assets: state.assets, counts: state.counts,
+      assets: state.assets.map(a => state.market.get(a.id) || a), counts: state.counts,
       lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv
     });
     if (path === "/api/dashboard") return sendJson(res, await dashboardData());
