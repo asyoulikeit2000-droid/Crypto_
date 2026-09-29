@@ -1,6 +1,4 @@
 import http from "node:http";
-import { WebSocket } from "node:stream/web";
-
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const SB = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
