@@ -444,3 +444,4 @@ process.on("SIGTERM", () => {
   server.close(() => process.exit(0));
 });
 // Market-data access fix: Bybit relay through Supabase Edge Singapore.
+// Source sync: keep Railway main-branch deployment aligned with repository head.
