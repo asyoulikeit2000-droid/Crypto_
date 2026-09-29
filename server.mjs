@@ -213,13 +213,13 @@ async function pollMarketData() {
     }
     state.lastTrade = receivedAt;
     state.counts.trades++;
-    await sb("trades", "POST", {}, {
+    await sb("trades", "POST", { on_conflict: "exchange,asset_id,trade_id" }, {
       asset_id: asset.id, exchange: "BYBIT", trade_id: tradeId,
       observed_at: new Date(Number(t.T || t.time)).toISOString(), price: Number(t.p || t.price),
       quantity: Number(t.v || t.size), side: (t.S || t.side) === "Buy" ? "BUY" : "SELL",
       is_buyer_maker: (t.S || t.side) !== "Buy", status: "LIVE",
       metadata: { symbol: t.symbol, received_at: receivedAt, source: "bybit_recent_trade_via_supabase_edge" }
-    });
+    }, { Prefer: "resolution=ignore-duplicates,return=minimal" });
   }
 
   for (const book of relay.books || []) {
