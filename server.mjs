@@ -399,3 +399,4 @@ process.on("SIGTERM", () => {
   try { ws?.close(); } catch {}
   server.close(() => process.exit(0));
 });
+// Fresh Railway deployment marker: 2026-09-30 latest-main verification.
