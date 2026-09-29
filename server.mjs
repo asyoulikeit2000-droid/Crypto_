@@ -32,7 +32,7 @@ function recordError(e) {
   console.error(JSON.stringify({ ts: new Date().toISOString(), error: message }));
 }
 
-async function sb(table, method = "GET", params = {}, body) {
+async function sb(table, method = "GET", params = {}, body, extraHeaders = {}) {
   if (!SB || !KEY) throw new Error("Supabase credentials not configured");
   const u = new URL(SB + "/rest/v1/" + table);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
@@ -40,7 +40,7 @@ async function sb(table, method = "GET", params = {}, body) {
   if (method !== "GET") {
     h["Content-Type"] = "application/json";
     h["Content-Profile"] = SCHEMA;
-    h.Prefer = "return=minimal";
+    h.Prefer = extraHeaders.Prefer || "return=minimal";
   }
   const r = await fetch(u, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
   if (!r.ok) throw new Error("Supabase " + r.status + " " + await r.text());
@@ -63,18 +63,15 @@ async function writeStatus(status, message = null) {
       dataset: "eq.engine",
       limit: "1"
     });
-    if (existing.length) {
-      await sb("provider_status", "PATCH", {
-        provider: "eq.BINANCE",
-        dataset: "eq.engine"
-      }, payload);
-    } else {
-      await sb("provider_status", "POST", {}, {
-        provider: "BINANCE",
-        dataset: "engine",
-        ...payload
-      });
-    }
+    await sb("provider_status", "POST", {
+      on_conflict: "provider,dataset"
+    }, {
+      provider: "BINANCE",
+      dataset: "engine",
+      ...payload
+    }, {
+      Prefer: "resolution=merge,return=minimal"
+    });
   } catch (e) {
     recordError(e);
   }
