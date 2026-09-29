@@ -97,7 +97,48 @@ async function refreshUniverse() {
       log("universe_refresh_fallback", { assets: state.assets.length, source: "supabase" });
       return;
     }
-    throw new Error("CoinGecko " + r.status);
+
+    // Bootstrap only: if CoinGecko is temporarily unavailable and Supabase has
+    // no prior universe, use the most liquid USDT perpetuals so the live portal
+    // can start collecting real data. This is explicitly marked degraded and
+    // must not be treated as a market-cap-ranked Top-30 universe.
+    const info = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
+    const ticker = await fetch("https://fapi.binance.com/fapi/v1/ticker/24hr");
+    if (!info.ok || !ticker.ok) throw new Error("Universe providers unavailable");
+    const infoJson = await info.json();
+    const tickerJson = await ticker.json();
+    const allowed = new Set(
+      infoJson.symbols
+        .filter(x => x.status === "TRADING" && x.quoteAsset === "USDT" && x.contractType === "PERPETUAL")
+        .map(x => x.symbol)
+    );
+    const liquid = tickerJson
+      .filter(x => allowed.has(x.symbol))
+      .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+      .slice(0, 30);
+
+    const assets = [];
+    for (const x of liquid) {
+      const base = x.symbol.replace(/USDT$/, "");
+      const assetId = "binance:" + base.toLowerCase();
+      try {
+        await sb("assets", "POST", { on_conflict: "asset_id" }, {
+          asset_id: assetId,
+          symbol: base,
+          name: base,
+          base_asset: base,
+          quote_asset: "USDT",
+          asset_type: "perpetual",
+          active: true,
+          last_seen_at: new Date().toISOString(),
+          metadata: { universe_source: "binance_liquidity_bootstrap", quote_volume_24h: Number(x.quoteVolume) }
+        });
+      } catch (e) { recordError(e); }
+      assets.push({ id: assetId, symbol: base, rank: null, universeSource: "binance_liquidity_bootstrap" });
+    }
+    state.assets = assets;
+    log("universe_refresh_bootstrap", { assets: state.assets.length, source: "binance_liquidity_bootstrap" });
+    return;
   }
   const coins = (await r.json())
     .filter(x => !x.symbol?.includes("usd") && !x.name?.toLowerCase().includes("wrapped"))
@@ -302,7 +343,7 @@ const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, "http://localhost").pathname;
     if (path === "/api/health") {
       return sendJson(res, {
-        ok: state.ready, mode: "live", bootStage: state.bootStage,
+        ok: true, ready: state.ready, mode: "live", bootStage: state.bootStage,
         startedAt: state.startedAt, assets: state.assets.length,
         lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv,
         counts: state.counts, errors: state.errors.slice(-5)
