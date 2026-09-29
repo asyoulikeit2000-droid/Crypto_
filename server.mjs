@@ -9,6 +9,8 @@ const HOST = process.env.HOST || "0.0.0.0";
 const SB = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const KEY = process.env.SUPABASE_SECRET_KEY || "";
 const SCHEMA = process.env.SUPABASE_DB_SCHEMA || "engine";
+const RELAY_URL = process.env.MARKET_RELAY_URL || (SB ? SB + "/functions/v1/market-data-relay" : "");
+const RELAY_KEY = process.env.MARKET_RELAY_KEY || "";
 
 const state = {
   startedAt: new Date().toISOString(),
@@ -48,7 +50,24 @@ async function sb(table, method = "GET", params = {}, body, extraHeaders = {}) {
   return t ? JSON.parse(t) : [];
 }
 
-async function writeStatus(status, message = null) {
+async function relayJson(mode, symbols = []) {
+  if (!RELAY_URL || !RELAY_KEY) throw new Error("Market relay is not configured");
+  const u = new URL(RELAY_URL);
+  u.searchParams.set("mode", mode);
+  if (symbols.length) u.searchParams.set("symbols", symbols.join(","));
+  const r = await fetch(u, {
+    headers: {
+      apikey: RELAY_KEY,
+      Authorization: "Bearer " + RELAY_KEY,
+      "x-region": "ap-southeast-1"
+    }
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error("Market relay HTTP " + r.status + " " + text.slice(0, 500));
+  return JSON.parse(text);
+}
+
+async function writeStatus(status, message = null, provider = "BYBIT_RELAY") {
   const payload = {
     checked_at: new Date().toISOString(),
     status,
@@ -58,7 +77,7 @@ async function writeStatus(status, message = null) {
   };
   try {
     const updated = await sb("provider_status", "PATCH", {
-      provider: "eq.BINANCE",
+      provider: "eq." + provider,
       dataset: "eq.engine"
     }, payload, { Prefer: "return=minimal" });
     return updated;
@@ -68,7 +87,7 @@ async function writeStatus(status, message = null) {
       await sb("provider_status", "POST", {
         on_conflict: "provider,dataset"
       }, {
-        provider: "BINANCE",
+        provider,
         dataset: "engine",
         ...payload
       }, {
@@ -111,13 +130,12 @@ async function refreshUniverse() {
       return;
     }
 
-    // Bootstrap only: if CoinGecko is temporarily unavailable and Supabase has
-    // no prior universe, use the most liquid USDT perpetuals so the live portal
-    // can start collecting real data. This is explicitly marked degraded and
-    // must not be treated as a market-cap-ranked Top-30 universe.
-    const infoJson = await fetchJson("https://api.bybit.com/v5/market/instruments-info?category=linear&status=Trading&limit=1000", "Bybit instruments");
-    const tickerJson = await fetchJson("https://api.bybit.com/v5/market/tickers?category=linear", "Bybit linear tickers");
-    if (!infoJson?.result?.list?.length || !tickerJson?.result?.list?.length) throw new Error("Universe providers unavailable");
+    // Bootstrap through the Supabase Edge relay. Railway's SFO egress is
+    // blocked by Bybit/CloudFront, while the relay can execute in Singapore.
+    const relay = await relayJson("bootstrap");
+    const infoJson = { result: { list: relay.info || [] } };
+    const tickerJson = { result: { list: relay.tickers || [] } };
+    if (!infoJson.result.list.length || !tickerJson.result.list.length) throw new Error("Market relay universe unavailable");
     const allowed = new Set(
       infoJson.result.list
         .filter(x => x.status === "Trading" && x.quoteCoin === "USDT" && x.contractType === "LinearPerpetual")
@@ -174,87 +192,83 @@ async function refreshUniverse() {
   log("universe_refresh_complete", { assets: state.assets.length });
 }
 
-let ws = null;
-let reconnectTimer = null;
+let pollTimer = null;
+const seenTradeIds = new Set();
+
+async function pollMarketData() {
+  const symbols = state.assets.map(x => x.symbol.toUpperCase() + "USDT").slice(0, 30);
+  if (!symbols.length) return;
+  const relay = await relayJson("snapshot_trades", symbols);
+  const receivedAt = new Date().toISOString();
+
+  for (const t of relay.trades || []) {
+    const asset = state.assets.find(x => x.symbol.toUpperCase() + "USDT" === String(t.symbol).toUpperCase());
+    if (!asset) continue;
+    const tradeId = String(t.i || (t.T + ":" + t.p + ":" + t.v + ":" + t.S));
+    if (seenTradeIds.has(asset.id + ":" + tradeId)) continue;
+    seenTradeIds.add(asset.id + ":" + tradeId);
+    if (seenTradeIds.size > 10000) {
+      const first = seenTradeIds.values().next().value;
+      seenTradeIds.delete(first);
+    }
+    state.lastTrade = receivedAt;
+    state.counts.trades++;
+    await sb("trades", "POST", {}, {
+      asset_id: asset.id, exchange: "BYBIT", trade_id: tradeId,
+      observed_at: new Date(Number(t.T)).toISOString(), price: Number(t.p),
+      quantity: Number(t.v), side: t.S === "Buy" ? "BUY" : "SELL",
+      is_buyer_maker: t.S !== "Buy", status: "LIVE",
+      metadata: { symbol: t.symbol, received_at: receivedAt, source: "bybit_recent_trade_via_supabase_edge" }
+    });
+  }
+
+  for (const book of relay.books || []) {
+    const asset = state.assets.find(x => x.symbol.toUpperCase() + "USDT" === String(book.symbol).toUpperCase());
+    if (!asset || book.error) continue;
+    const bid = book.b?.[0], ask = book.a?.[0];
+    if (!bid || !ask) continue;
+    const bp = Number(bid[0]), bq = Number(bid[1]);
+    const ap = Number(ask[0]), aq = Number(ask[1]);
+    const mid = (bp + ap) / 2;
+    const imbalance = (bq - aq) / (bq + aq || 1);
+    const spreadBps = ((ap - bp) / mid) * 10000;
+    state.lastBook = receivedAt;
+    state.counts.books++;
+    await sb("orderbook_snapshots", "POST", {}, {
+      asset_id: asset.id, exchange: "BYBIT", observed_at: receivedAt,
+      best_bid: bp, best_ask: ap, spread_bps: spreadBps,
+      bid_depth: bp * bq, ask_depth: ap * aq, imbalance,
+      depth_levels: 1, status: "LIVE",
+      metadata: { symbol: book.symbol, received_at: receivedAt, source: "bybit_orderbook_via_supabase_edge" }
+    });
+  }
+
+  for (const x of relay.tickers || []) {
+    const asset = state.assets.find(a => a.symbol.toUpperCase() + "USDT" === String(x.symbol).toUpperCase());
+    if (!asset) continue;
+    const now = new Date().toISOString();
+    if (x.fundingRate !== undefined) {
+      await sb("funding", "POST", {}, {
+        asset_id: asset.id, exchange: "BYBIT", observed_at: now,
+        funding_rate: Number(x.fundingRate),
+        next_funding_at: x.nextFundingTime ? new Date(Number(x.nextFundingTime)).toISOString() : null,
+        mark_price: Number(x.markPrice), index_price: Number(x.indexPrice), status: "LIVE"
+      });
+      state.lastDeriv = now;
+      state.counts.derivatives++;
+    }
+  }
+}
 
 function connect() {
-  if (typeof WebSocket !== "function") throw new Error("WebSocket global is unavailable in this Node runtime");
-  if (ws) { try { ws.close(); } catch {} ws = null; }
-
-  const symbols = state.assets.map(x => x.symbol.toUpperCase() + "USDT").slice(0, 30);
-  const url = "wss://stream.bybit.com/v5/public/linear";
-  log("bybit_ws_connecting", { symbols: symbols.length });
-  ws = new WebSocket(url);
-
-  ws.addEventListener("open", () => {
-    log("bybit_ws_open", { symbols: symbols.length });
-    ws.send(JSON.stringify({
-      op: "subscribe",
-      args: symbols.flatMap(s => ["publicTrade." + s, "orderbook.1." + s])
-    }));
-    writeStatus("LIVE", "bybit streams connected");
-  });
-  ws.addEventListener("close", () => {
-    log("bybit_ws_closed");
-    writeStatus("STALE", "websocket closed");
-    if (!reconnectTimer) reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      try { connect(); } catch (e) { recordError(e); }
-    }, 5000);
-  });
-  ws.addEventListener("error", () => {
-    log("bybit_ws_error");
-    writeStatus("DELAYED", "websocket error");
-  });
-  ws.addEventListener("message", async event => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (!msg.topic || !msg.data) return;
-      const symbol = String(msg.data?.[0]?.s || msg.data?.s || "").toUpperCase();
-      const baseSymbol = symbol.replace(/USDT$/, "");
-      const asset = state.assets.find(x => x.symbol === baseSymbol);
-      if (!asset) return;
-      const receivedAt = new Date().toISOString();
-
-      if (msg.topic.startsWith("publicTrade.")) {
-        for (const t of (Array.isArray(msg.data) ? msg.data : [msg.data])) {
-          state.lastTrade = receivedAt;
-          state.counts.trades++;
-          await sb("trades", "POST", {}, {
-            asset_id: asset.id, exchange: "BYBIT", trade_id: String(t.i),
-            observed_at: new Date(Number(t.T)).toISOString(), price: Number(t.p),
-            quantity: Number(t.v), side: t.S === "Buy" ? "BUY" : "SELL",
-            is_buyer_maker: t.S !== "Buy", status: "LIVE",
-            metadata: { symbol, received_at: receivedAt, source: "bybit_publicTrade" }
-          });
-        }
-      } else if (msg.topic.startsWith("orderbook.1.")) {
-        const bid = msg.data.b?.[0], ask = msg.data.a?.[0];
-        if (!bid || !ask) return;
-        const bp = Number(bid[0]), bq = Number(bid[1]);
-        const ap = Number(ask[0]), aq = Number(ask[1]);
-        const mid = (bp + ap) / 2;
-        const imbalance = (bq - aq) / (bq + aq || 1);
-        const spreadBps = ((ap - bp) / mid) * 10000;
-        state.lastBook = receivedAt;
-        state.counts.books++;
-        await sb("orderbook_snapshots", "POST", {}, {
-          asset_id: asset.id, exchange: "BYBIT",
-          observed_at: new Date(Number(msg.ts || Date.now())).toISOString(),
-          best_bid: bp, best_ask: ap, spread_bps: spreadBps,
-          bid_depth: bp * bq, ask_depth: ap * aq, imbalance,
-          depth_levels: 1, status: "LIVE",
-          metadata: { symbol, received_at: receivedAt, source: "bybit_orderbook" }
-        });
-      }
-    } catch (e) { recordError(e); }
-  });
-
-  const heartbeat = setInterval(() => {
-    try { if (ws) ws.send(JSON.stringify({ op: "ping" })); } catch {}
-  }, 20000);
-  ws._heartbeat = heartbeat;
+  if (pollTimer) return;
+  log("bybit_relay_polling_start");
+  pollMarketData().catch(e => { recordError(e); writeStatus("DELAYED", e.message); });
+  pollTimer = setInterval(() => {
+    pollMarketData().catch(e => { recordError(e); writeStatus("DELAYED", e.message); });
+  }, 5000);
 }
+
 async function safeRead(table, params = {}) {
   try { return await sb(table, "GET", params); }
   catch (e) { recordError(e); return []; }
@@ -308,23 +322,7 @@ async function serveStatic(req, res) {
 
 async function refreshDerivatives() {
   try {
-    const r = await fetch("https://api.bybit.com/v5/market/tickers?category=linear");
-    if (!r.ok) throw new Error("Bybit tickers HTTP " + r.status + " " + (await r.text()).slice(0, 300));
-    const json = await r.json();
-    const bySymbol = new Map((json.result?.list || []).map(x => [x.symbol, x]));
-    for (const asset of state.assets.slice(0, 30)) {
-      const x = bySymbol.get(asset.symbol + "USDT");
-      if (!x || x.fundingRate === undefined) continue;
-      const now = new Date().toISOString();
-      await sb("funding", "POST", {}, {
-        asset_id: asset.id, exchange: "BYBIT", observed_at: now,
-        funding_rate: Number(x.fundingRate),
-        next_funding_at: x.nextFundingTime ? new Date(Number(x.nextFundingTime)).toISOString() : null,
-        mark_price: Number(x.markPrice), index_price: Number(x.indexPrice), status: "LIVE"
-      });
-      state.lastDeriv = now;
-      state.counts.derivatives++;
-    }
+    await pollMarketData();
   } catch (e) { recordError(e); }
 }
 async function main() {
@@ -336,7 +334,7 @@ async function main() {
     state.bootStage = "universe";
     await refreshUniverse();
 
-    state.bootStage = "binance_ws";
+    state.bootStage = "market_relay";
     connect();
 
     state.bootStage = "derivatives";
@@ -345,7 +343,7 @@ async function main() {
     setInterval(() => refreshUniverse().catch(e => { recordError(e); writeStatus("DELAYED", e.message); }), 10 * 60 * 1000);
     setInterval(() => refreshDerivatives().catch(recordError), 60 * 1000);
     setInterval(() => {
-      const fresh = state.lastTrade && Date.now() - Date.parse(state.lastTrade) < 15000;
+      const fresh = state.lastTrade && Date.now() - Date.parse(state.lastTrade) < 20000;
       writeStatus(fresh ? "LIVE" : "STALE", "heartbeat");
     }, 15000);
 
@@ -399,4 +397,4 @@ process.on("SIGTERM", () => {
   try { ws?.close(); } catch {}
   server.close(() => process.exit(0));
 });
-// Fresh Railway deployment marker: 2026-09-30 latest-main verification.
+// Market-data access fix: Bybit relay through Supabase Edge Singapore.
