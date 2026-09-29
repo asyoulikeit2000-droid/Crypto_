@@ -115,23 +115,23 @@ async function refreshUniverse() {
     // no prior universe, use the most liquid USDT perpetuals so the live portal
     // can start collecting real data. This is explicitly marked degraded and
     // must not be treated as a market-cap-ranked Top-30 universe.
-    const infoJson = await fetchJson("https://fapi.binance.com/fapi/v1/exchangeInfo", "Binance exchangeInfo");
-    const tickerJson = await fetchJson("https://fapi.binance.com/fapi/v1/ticker/24hr", "Binance 24hr ticker");
-    if (!infoJson || !tickerJson) throw new Error("Universe providers unavailable");
+    const infoJson = await fetchJson("https://api.bybit.com/v5/market/instruments-info?category=linear&status=Trading&limit=1000", "Bybit instruments");
+    const tickerJson = await fetchJson("https://api.bybit.com/v5/market/tickers?category=linear", "Bybit linear tickers");
+    if (!infoJson?.result?.list?.length || !tickerJson?.result?.list?.length) throw new Error("Universe providers unavailable");
     const allowed = new Set(
-      infoJson.symbols
-        .filter(x => x.status === "TRADING" && x.quoteAsset === "USDT" && x.contractType === "PERPETUAL")
+      infoJson.result.list
+        .filter(x => x.status === "Trading" && x.quoteCoin === "USDT" && x.contractType === "LinearPerpetual")
         .map(x => x.symbol)
     );
-    const liquid = tickerJson
+    const liquid = tickerJson.result.list
       .filter(x => allowed.has(x.symbol))
-      .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+      .sort((a, b) => Number(b.turnover24h || 0) - Number(a.turnover24h || 0))
       .slice(0, 30);
 
     const assets = [];
     for (const x of liquid) {
       const base = x.symbol.replace(/USDT$/, "");
-      const assetId = "binance:" + base.toLowerCase();
+      const assetId = "bybit:" + base.toLowerCase();
       try {
         await sb("assets", "POST", { on_conflict: "asset_id" }, {
           asset_id: assetId,
@@ -142,13 +142,13 @@ async function refreshUniverse() {
           asset_type: "perpetual",
           active: true,
           last_seen_at: new Date().toISOString(),
-          metadata: { universe_source: "binance_liquidity_bootstrap", quote_volume_24h: Number(x.quoteVolume) }
+          metadata: { universe_source: "bybit_liquidity_bootstrap", turnover_24h: Number(x.turnover24h || 0) }
         });
       } catch (e) { recordError(e); }
-      assets.push({ id: assetId, symbol: base, rank: null, universeSource: "binance_liquidity_bootstrap" });
+      assets.push({ id: assetId, symbol: base, rank: null, universeSource: "bybit_liquidity_bootstrap" });
     }
     state.assets = assets;
-    log("universe_refresh_bootstrap", { assets: state.assets.length, source: "binance_liquidity_bootstrap" });
+    log("universe_refresh_bootstrap", { assets: state.assets.length, source: "bybit_liquidity_bootstrap" });
     return;
   }
   const marketCoins = coins
@@ -181,18 +181,21 @@ function connect() {
   if (typeof WebSocket !== "function") throw new Error("WebSocket global is unavailable in this Node runtime");
   if (ws) { try { ws.close(); } catch {} ws = null; }
 
-  const symbols = state.assets.map(x => x.symbol.toLowerCase() + "usdt").slice(0, 30);
-  const streams = symbols.flatMap(s => [s + "@trade", s + "@depth20@100ms"]);
-  const url = "wss://fstream.binance.com/stream?streams=" + streams.join("/");
-  log("binance_ws_connecting", { symbols: symbols.length });
+  const symbols = state.assets.map(x => x.symbol.toUpperCase() + "USDT").slice(0, 30);
+  const url = "wss://stream.bybit.com/v5/public/linear";
+  log("bybit_ws_connecting", { symbols: symbols.length });
   ws = new WebSocket(url);
 
   ws.addEventListener("open", () => {
-    log("binance_ws_open", { symbols: symbols.length });
-    writeStatus("LIVE", "streams connected");
+    log("bybit_ws_open", { symbols: symbols.length });
+    ws.send(JSON.stringify({
+      op: "subscribe",
+      args: symbols.flatMap(s => ["publicTrade." + s, "orderbook.1." + s])
+    }));
+    writeStatus("LIVE", "bybit streams connected");
   });
   ws.addEventListener("close", () => {
-    log("binance_ws_closed");
+    log("bybit_ws_closed");
     writeStatus("STALE", "websocket closed");
     if (!reconnectTimer) reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -200,29 +203,33 @@ function connect() {
     }, 5000);
   });
   ws.addEventListener("error", () => {
-    log("binance_ws_error");
+    log("bybit_ws_error");
     writeStatus("DELAYED", "websocket error");
   });
   ws.addEventListener("message", async event => {
     try {
-      const data = JSON.parse(event.data).data;
-      const symbol = data?.s?.toUpperCase();
-      const asset = state.assets.find(x => x.symbol + "USDT" === symbol);
+      const msg = JSON.parse(event.data);
+      if (!msg.topic || !msg.data) return;
+      const symbol = String(msg.data?.[0]?.s || msg.data?.s || "").toUpperCase();
+      const baseSymbol = symbol.replace(/USDT$/, "");
+      const asset = state.assets.find(x => x.symbol === baseSymbol);
       if (!asset) return;
       const receivedAt = new Date().toISOString();
 
-      if (data.e === "trade") {
-        state.lastTrade = receivedAt;
-        state.counts.trades++;
-        await sb("trades", "POST", {}, {
-          asset_id: asset.id, exchange: "BINANCE", trade_id: String(data.t),
-          observed_at: new Date(data.T).toISOString(), price: Number(data.p),
-          quantity: Number(data.q), side: data.m ? "SELL" : "BUY",
-          is_buyer_maker: Boolean(data.m), status: "LIVE",
-          metadata: { symbol, received_at: receivedAt }
-        });
-      } else if (data.e === "depthUpdate") {
-        const bid = data.b?.[0], ask = data.a?.[0];
+      if (msg.topic.startsWith("publicTrade.")) {
+        for (const t of (Array.isArray(msg.data) ? msg.data : [msg.data])) {
+          state.lastTrade = receivedAt;
+          state.counts.trades++;
+          await sb("trades", "POST", {}, {
+            asset_id: asset.id, exchange: "BYBIT", trade_id: String(t.i),
+            observed_at: new Date(Number(t.T)).toISOString(), price: Number(t.p),
+            quantity: Number(t.v), side: t.S === "Buy" ? "BUY" : "SELL",
+            is_buyer_maker: t.S !== "Buy", status: "LIVE",
+            metadata: { symbol, received_at: receivedAt, source: "bybit_publicTrade" }
+          });
+        }
+      } else if (msg.topic.startsWith("orderbook.1.")) {
+        const bid = msg.data.b?.[0], ask = msg.data.a?.[0];
         if (!bid || !ask) return;
         const bp = Number(bid[0]), bq = Number(bid[1]);
         const ap = Number(ask[0]), aq = Number(ask[1]);
@@ -232,18 +239,22 @@ function connect() {
         state.lastBook = receivedAt;
         state.counts.books++;
         await sb("orderbook_snapshots", "POST", {}, {
-          asset_id: asset.id, exchange: "BINANCE",
-          observed_at: new Date(data.E).toISOString(),
+          asset_id: asset.id, exchange: "BYBIT",
+          observed_at: new Date(Number(msg.ts || Date.now())).toISOString(),
           best_bid: bp, best_ask: ap, spread_bps: spreadBps,
           bid_depth: bp * bq, ask_depth: ap * aq, imbalance,
-          depth_levels: 20, status: "LIVE",
-          metadata: { symbol, received_at: receivedAt }
+          depth_levels: 1, status: "LIVE",
+          metadata: { symbol, received_at: receivedAt, source: "bybit_orderbook" }
         });
       }
     } catch (e) { recordError(e); }
   });
-}
 
+  const heartbeat = setInterval(() => {
+    try { if (ws) ws.send(JSON.stringify({ op: "ping" })); } catch {}
+  }, 20000);
+  ws._heartbeat = heartbeat;
+}
 async function safeRead(table, params = {}) {
   try { return await sb(table, "GET", params); }
   catch (e) { recordError(e); return []; }
@@ -296,24 +307,26 @@ async function serveStatic(req, res) {
 }
 
 async function refreshDerivatives() {
-  for (const asset of state.assets.slice(0, 30)) {
-    try {
-      const r = await fetch("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=" + asset.symbol + "USDT");
-      if (!r.ok) continue;
-      const x = await r.json();
+  try {
+    const r = await fetch("https://api.bybit.com/v5/market/tickers?category=linear");
+    if (!r.ok) throw new Error("Bybit tickers HTTP " + r.status + " " + (await r.text()).slice(0, 300));
+    const json = await r.json();
+    const bySymbol = new Map((json.result?.list || []).map(x => [x.symbol, x]));
+    for (const asset of state.assets.slice(0, 30)) {
+      const x = bySymbol.get(asset.symbol + "USDT");
+      if (!x || x.fundingRate === undefined) continue;
       const now = new Date().toISOString();
       await sb("funding", "POST", {}, {
-        asset_id: asset.id, exchange: "BINANCE", observed_at: now,
-        funding_rate: Number(x.lastFundingRate),
-        next_funding_at: new Date(Number(x.nextFundingTime)).toISOString(),
+        asset_id: asset.id, exchange: "BYBIT", observed_at: now,
+        funding_rate: Number(x.fundingRate),
+        next_funding_at: x.nextFundingTime ? new Date(Number(x.nextFundingTime)).toISOString() : null,
         mark_price: Number(x.markPrice), index_price: Number(x.indexPrice), status: "LIVE"
       });
       state.lastDeriv = now;
       state.counts.derivatives++;
-    } catch (e) { recordError(e); }
-  }
+    }
+  } catch (e) { recordError(e); }
 }
-
 async function main() {
   try {
     state.bootStage = "supabase";
@@ -341,11 +354,11 @@ async function main() {
     log("engine_ready", { assets: state.assets.length });
     await writeStatus("LIVE", "engine ready");
   } catch (e) {
-    state.bootStage = "failed";
-    state.ready = false;
+    state.bootStage = "degraded";
+    state.ready = true;
     recordError(e);
     await writeStatus("UNAVAILABLE", String(e?.message || e));
-    log("engine_boot_failed");
+    log("engine_boot_degraded");
   }
 }
 
