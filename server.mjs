@@ -1,4 +1,8 @@
 import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
+const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const SB = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
@@ -84,6 +88,11 @@ function connect() {
   });
 }
 
+async function safeRead(table, params = {}) { try { return await sb(table, "GET", params); } catch (e) { recordError(e); return []; } }
+async function dashboardData() { const [signals,paperTrades,providers]=await Promise.all([safeRead("latest_signals",{select:"*",limit:"50"}),safeRead("latest_paper_trades",{select:"*",limit:"50"}),safeRead("provider_status",{select:"*",limit:"20"})]); return {generatedAt:new Date().toISOString(),health:{ok:true,mode:"live",startedAt:state.startedAt,assets:state.assets.length,lastTrade:state.lastTrade,lastBook:state.lastBook,lastDeriv:state.lastDeriv,counts:state.counts,errors:state.errors.slice(-5)},assets:state.assets,signals,paperTrades,providers}; }
+function sendJson(res,value,status=200){res.statusCode=status;res.setHeader("content-type","application/json; charset=utf-8");res.setHeader("cache-control","no-store");res.setHeader("x-content-type-options","nosniff");res.end(JSON.stringify(value));}
+async function serveStatic(req,res){const pathname=decodeURIComponent(new URL(req.url,"http://localhost").pathname);const rel=pathname==="/"?"index.html":pathname.replace(/^\\/+/, "");const file=normalize(join(PUBLIC_DIR,rel));if(!file.startsWith(PUBLIC_DIR))return sendJson(res,{error:"not_found"},404);try{const data=await readFile(file);const ext=extname(file);const type=ext===".html"?"text/html; charset=utf-8":ext===".js"?"text/javascript; charset=utf-8":ext===".css"?"text/css; charset=utf-8":"application/octet-stream";res.statusCode=200;res.setHeader("content-type",type);res.setHeader("cache-control","no-cache");res.setHeader("x-content-type-options","nosniff");res.end(data)}catch{sendJson(res,{error:"not_found"},404)}}
+
 async function refreshDerivatives() {
   for (const asset of state.assets.slice(0, 30)) {
     try {
@@ -113,12 +122,6 @@ async function main() {
   }, 15000);
 }
 
-const server = http.createServer((req, res) => {
-  res.setHeader("content-type", "application/json");
-  res.setHeader("cache-control", "no-store");
-  if (req.url === "/api/health") return res.end(JSON.stringify({ ok: true, mode: "live", startedAt: state.startedAt, assets: state.assets.length, lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv, counts: state.counts, errors: state.errors.slice(-5) }));
-  if (req.url === "/api/market") return res.end(JSON.stringify({ assets: state.assets, counts: state.counts, lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv }));
-  res.statusCode = 404; res.end(JSON.stringify({ error: "not_found" }));
-});
+const server = http.createServer(async (req,res)=>{try{const path=new URL(req.url,"http://localhost").pathname;if(path==="/api/health")return sendJson(res,{ok:true,mode:"live",startedAt:state.startedAt,assets:state.assets.length,lastTrade:state.lastTrade,lastBook:state.lastBook,lastDeriv:state.lastDeriv,counts:state.counts,errors:state.errors.slice(-5)});if(path==="/api/market")return sendJson(res,{assets:state.assets,counts:state.counts,lastTrade:state.lastTrade,lastBook:state.lastBook,lastDeriv:state.lastDeriv});if(path==="/api/dashboard")return sendJson(res,await dashboardData());if(path==="/api/signals")return sendJson(res,await safeRead("latest_signals",{select:"*",limit:"100"}));if(path==="/api/paper")return sendJson(res,await safeRead("latest_paper_trades",{select:"*",limit:"100"}));if(path==="/api/providers")return sendJson(res,await safeRead("provider_status",{select:"*",limit:"50"}));if(path.startsWith("/api/"))return sendJson(res,{error:"not_found"},404);return serveStatic(req,res)}catch(e){recordError(e);return sendJson(res,{error:"server_error",message:String(e?.message||e)},500)}});
 server.listen(PORT, HOST, () => main().catch(e => { recordError(e); writeStatus("UNAVAILABLE", e.message); }));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
