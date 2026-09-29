@@ -59,9 +59,18 @@ async function writeStatus(status, message = null) {
       error_message: message,
       metadata: {}
     });
-  } catch (e) { recordError(e); }
+  } catch (e) {
+    try {
+      await sb("provider_status", "PATCH", { provider: "eq.BINANCE", dataset: "eq.engine" }, {
+        checked_at: new Date().toISOString(),
+        status,
+        last_event_at: new Date().toISOString(),
+        error_message: message,
+        metadata: {}
+      });
+    } catch (patchError) { recordError(patchError); }
+  }
 }
-
 async function refreshUniverse() {
   log("universe_refresh_start");
   const r = await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false");
