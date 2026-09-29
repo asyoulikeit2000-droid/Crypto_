@@ -192,7 +192,7 @@ function sendJson(res, value, status = 200) {
 
 async function serveStatic(req, res) {
   const pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
-  const rel = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const rel = pathname === "/" ? "index.html" : pathname.slice(1);
   const file = normalize(join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) return sendJson(res, { error: "not_found" }, 404);
   try {
