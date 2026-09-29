@@ -57,29 +57,45 @@ async function writeStatus(status, message = null) {
     metadata: {}
   };
   try {
-    const existing = await sb("provider_status", "GET", {
-      select: "provider",
+    const updated = await sb("provider_status", "PATCH", {
       provider: "eq.BINANCE",
-      dataset: "eq.engine",
-      limit: "1"
-    });
-    await sb("provider_status", "POST", {
-      on_conflict: "provider,dataset"
-    }, {
-      provider: "BINANCE",
-      dataset: "engine",
-      ...payload
-    }, {
-      Prefer: "resolution=merge,return=minimal"
-    });
+      dataset: "eq.engine"
+    }, payload, { Prefer: "return=minimal" });
+    return updated;
   } catch (e) {
     recordError(e);
+    try {
+      await sb("provider_status", "POST", {
+        on_conflict: "provider,dataset"
+      }, {
+        provider: "BINANCE",
+        dataset: "engine",
+        ...payload
+      }, {
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      });
+    } catch (e2) {
+      recordError(e2);
+    }
   }
 }
 async function refreshUniverse() {
   log("universe_refresh_start");
-  const r = await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false");
-  if (!r.ok) {
+  const fetchJson = async (url, label) => {
+    try {
+      const r = await fetch(url, { headers: { "user-agent": "crypto-intelligence-engine/0.1" } });
+      if (!r.ok) {
+        const body = await r.text();
+        throw new Error(label + " HTTP " + r.status + " " + body.slice(0, 300));
+      }
+      return await r.json();
+    } catch (e) {
+      recordError(e);
+      return null;
+    }
+  };
+  const coins = await fetchJson("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false", "CoinGecko");
+  if (!coins) {
     const fallback = await sb("assets", "GET", {
       select: "asset_id,symbol,metadata",
       active: "eq.true",
@@ -99,11 +115,9 @@ async function refreshUniverse() {
     // no prior universe, use the most liquid USDT perpetuals so the live portal
     // can start collecting real data. This is explicitly marked degraded and
     // must not be treated as a market-cap-ranked Top-30 universe.
-    const info = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
-    const ticker = await fetch("https://fapi.binance.com/fapi/v1/ticker/24hr");
-    if (!info.ok || !ticker.ok) throw new Error("Universe providers unavailable");
-    const infoJson = await info.json();
-    const tickerJson = await ticker.json();
+    const infoJson = await fetchJson("https://fapi.binance.com/fapi/v1/exchangeInfo", "Binance exchangeInfo");
+    const tickerJson = await fetchJson("https://fapi.binance.com/fapi/v1/ticker/24hr", "Binance 24hr ticker");
+    if (!infoJson || !tickerJson) throw new Error("Universe providers unavailable");
     const allowed = new Set(
       infoJson.symbols
         .filter(x => x.status === "TRADING" && x.quoteAsset === "USDT" && x.contractType === "PERPETUAL")
@@ -137,7 +151,7 @@ async function refreshUniverse() {
     log("universe_refresh_bootstrap", { assets: state.assets.length, source: "binance_liquidity_bootstrap" });
     return;
   }
-  const coins = (await r.json())
+  const marketCoins = coins
     .filter(x => !x.symbol?.includes("usd") && !x.name?.toLowerCase().includes("wrapped"))
     .slice(0, 30);
 
@@ -156,7 +170,7 @@ async function refreshUniverse() {
       });
     } catch (e) { recordError(e); }
   }
-  state.assets = coins.map(x => ({ id: x.id, symbol: x.symbol.toUpperCase(), rank: x.market_cap_rank }));
+  state.assets = marketCoins.map(x => ({ id: x.id, symbol: x.symbol.toUpperCase(), rank: x.market_cap_rank }));
   log("universe_refresh_complete", { assets: state.assets.length });
 }
 
