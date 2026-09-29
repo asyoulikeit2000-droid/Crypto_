@@ -12,7 +12,7 @@ async function sb(table, method = "GET", params = {}, body) {
   if (!SB || !KEY) throw new Error("Supabase credentials not configured");
   const u = new URL(SB + "/rest/v1/" + table);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
-  const h = { apikey: KEY, Authorization: "Bearer " + KEY, "Accept-Profile": SCHEMA };
+  const h = { apikey: KEY, "Accept-Profile": SCHEMA };
   if (method !== "GET") { h["Content-Type"] = "application/json"; h["Content-Profile"] = SCHEMA; h.Prefer = "return=minimal"; }
   const r = await fetch(u, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
   if (!r.ok) throw new Error("Supabase " + r.status + " " + await r.text());
