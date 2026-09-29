@@ -292,6 +292,51 @@ async function dashboardData() {
   };
 }
 
+async function emitSafetyNoTrade() {
+  try {
+    const ks = await safeRead("kill_switch", { select: "enabled,reason", id: "eq.1", limit: "1" });
+    const kill = ks[0];
+    const activeModels = await safeRead("model_versions", { select: "model_id,status", status: "eq.ACTIVE", limit: "1" });
+    if (kill?.enabled || activeModels.length) return;
+    const now = new Date().toISOString();
+    for (const asset of state.assets) {
+      const latestBook = await safeRead("orderbook_snapshots", {
+        select: "observed_at,best_bid,best_ask,imbalance,spread_bps",
+        asset_id: "eq." + asset.id,
+        order: "observed_at.desc",
+        limit: "1"
+      });
+      const book = latestBook[0];
+      const freshBook = book && Date.now() - Date.parse(book.observed_at) < 30000;
+      const dataQuality = freshBook ? "LIVE_NO_VALIDATED_MODEL" : "STALE_CORE_DATA";
+      await sb("signals", "POST", {}, {
+        asset_id: asset.id,
+        created_at: now,
+        horizon: "H1",
+        signal: "NO TRADE",
+        entry: book?.best_bid && book?.best_ask ? (Number(book.best_bid) + Number(book.best_ask)) / 2 : null,
+        stop_loss: null,
+        target_1: null,
+        target_2: null,
+        target_3: null,
+        p_t1: null,
+        p_t2: null,
+        p_t3: null,
+        expected_value: null,
+        risk_state: freshBook ? "MODEL_NOT_VALIDATED" : "CORE_DATA_STALE",
+        data_quality: dataQuality,
+        model_id: null,
+        feature_version: "safety-gate-v1",
+        reasons: [{ code: freshBook ? "MODEL_NOT_VALIDATED" : "CORE_DATA_STALE", message: freshBook ? "No validated probability model is active; directional signals are disabled." : "Core order-book data is stale; directional signals are disabled." }],
+        snapshot: { observed_at: now, book_observed_at: book?.observed_at || null, imbalance: book?.imbalance ?? null, spread_bps: book?.spread_bps ?? null },
+        immutable: true
+      }, { Prefer: "return=minimal" });
+    }
+  } catch (e) {
+    recordError(e);
+  }
+}
+
 function sendJson(res, value, status = 200) {
   res.statusCode = status;
   res.setHeader("content-type", "application/json; charset=utf-8");
@@ -340,7 +385,9 @@ async function main() {
     state.bootStage = "derivatives";
     await refreshDerivatives();
 
+    await emitSafetyNoTrade();
     setInterval(() => refreshUniverse().catch(e => { recordError(e); writeStatus("DELAYED", e.message); }), 10 * 60 * 1000);
+    setInterval(() => emitSafetyNoTrade(), 60 * 1000);
     setInterval(() => refreshDerivatives().catch(recordError), 60 * 1000);
     setInterval(() => {
       const fresh = state.lastTrade && Date.now() - Date.parse(state.lastTrade) < 20000;
@@ -393,8 +440,7 @@ server.listen(PORT, HOST, () => {
 });
 
 process.on("SIGTERM", () => {
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  try { ws?.close(); } catch {}
+  if (pollTimer) clearInterval(pollTimer);
   server.close(() => process.exit(0));
 });
 // Market-data access fix: Bybit relay through Supabase Edge Singapore.
