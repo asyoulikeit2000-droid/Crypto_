@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rankEligibleUniverse } from "./universe-engine.mjs";
+import { createIntelligenceEngine } from "./intelligence-engine.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -23,7 +24,8 @@ const state = {
   assets: [],
   errors: [],
   counts: { trades: 0, books: 0, derivatives: 0 },
-  market: new Map()
+  market: new Map(),
+  intelligence: createIntelligenceEngine()
 };
 
 function log(message, meta = {}) {
