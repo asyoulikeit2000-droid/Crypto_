@@ -548,7 +548,6 @@ function computeSignal(asset, feat) {
   const rawProbabilityT1 = clamp(0.50 + strength * 0.32 + Math.max(0, finite(feat.cvd_10m)) * 0.06, 0.51, 0.88);
   const calibrated = state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;
   const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);
-  if (state.calibration.status === "EDGE_NOT_CONFIRMED") return { action: "NO TRADE", reason: "learning_hold_no_confirmed_edge" };
   const expectedReturn = probabilityT1 * riskPct - (1 - probabilityT1) * riskPct;
   const riskState = spread < 6 && strength >= 0.45 ? "NORMAL" : "CAUTION";
   const reasons = [
