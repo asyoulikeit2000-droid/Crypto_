@@ -2,6 +2,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rankEligibleUniverse } from "./universe-engine.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -101,352 +102,58 @@ async function writeStatus(status, message = null, provider = "BYBIT_RELAY") {
 }
 async function refreshUniverse() {
   log("universe_refresh_start");
-  const fetchJson = async (url, label) => {
-    try {
-      const r = await fetch(url, { headers: { "user-agent": "crypto-intelligence-engine/0.1" } });
-      if (!r.ok) {
-        const body = await r.text();
-        throw new Error(label + " HTTP " + r.status + " " + body.slice(0, 300));
-      }
-      return await r.json();
-    } catch (e) {
-      recordError(e);
-      return null;
+  let relay = null;
+  try {
+    relay = await relayJson("bootstrap");
+  } catch (e) {
+    recordError(e);
+    relay = null;
+  }
+
+  // Primary runtime universe: all eligible USDT linear perpetuals returned by the
+  // provider, dynamically ranked for entry quality. This is intentionally NOT a
+  // hard-coded symbol list or a permanent Top-30 list.
+  if (relay?.info?.length && relay?.tickers?.length) {
+    const bookBySymbol = new Map();
+    for (const [id,m] of state.market.entries()) {
+      if (m.symbol) bookBySymbol.set(String(m.symbol).toUpperCase()+"USDT", {
+        spreadBps:m.spreadBps, depthUsd:m.depthUsd, fresh:m.bookFresh
+      });
     }
-  };
-  const coins = await fetchJson("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false", "CoinGecko");
-  if (!coins) {
-    const fallback = await sb("assets", "GET", {
-      select: "asset_id,symbol,metadata",
-      active: "eq.true",
-      limit: "50"
-    });
-    if (fallback.length) {
-      state.assets = fallback.slice(0, 30).map((x, i) => ({
-        id: x.asset_id,
-        symbol: x.symbol.toUpperCase(),
-        rank: Number(x.metadata?.rank || i + 1)
-      }));
-      log("universe_refresh_fallback", { assets: state.assets.length, source: "supabase" });
+    const ranked = rankEligibleUniverse(relay.info, relay.tickers, bookBySymbol, 30);
+    if (ranked.length) {
+      const assets=[];
+      for (const x of ranked) {
+        const base=x.baseAsset;
+        const assetId="bybit:"+base.toLowerCase();
+        try {
+          await sb("assets","POST",{on_conflict:"asset_id"},{
+            asset_id:assetId,symbol:base,name:base,base_asset:base,quote_asset:"USDT",
+            asset_type:"perpetual",active:true,last_seen_at:new Date().toISOString(),
+            metadata:{universe_source:"dynamic_entry_eligibility",eligibility_score:x.eligibilityScore,
+              turnover_24h:x.turnover24h,volume_24h:x.volume24h,spread_bps:x.spreadBps,
+              depth_usd:x.depthUsd,selection_basis:x.selectionBasis}
+          });
+        } catch(e){ recordError(e); }
+        assets.push({id:assetId,symbol:base,rank:null,eligibilityScore:x.eligibilityScore,
+          universeSource:"dynamic_entry_eligibility",turnover24h:x.turnover24h});
+      }
+      state.assets=assets;
+      log("universe_refresh_complete",{assets:assets.length,source:"dynamic_entry_eligibility"});
       return;
     }
+  }
 
-    // Bootstrap through the Supabase Edge relay. Railway's SFO egress is
-    // blocked by Bybit/CloudFront, while the relay can execute in Singapore.
-    const relay = await relayJson("bootstrap");
-    const infoJson = { result: { list: relay.info || [] } };
-    const tickerJson = { result: { list: relay.tickers || [] } };
-    if (!infoJson.result.list.length || !tickerJson.result.list.length) throw new Error("Market relay universe unavailable");
-    const allowed = new Set(
-      infoJson.result.list
-        .filter(x => x.status === "Trading" && x.quoteCoin === "USDT" && x.contractType === "LinearPerpetual")
-        .map(x => x.symbol)
-    );
-    const liquid = tickerJson.result.list
-      .filter(x => allowed.has(x.symbol))
-      .sort((a, b) => Number(b.turnover24h || 0) - Number(a.turnover24h || 0))
-      .slice(0, 30);
-
-    const assets = [];
-    for (const x of liquid) {
-      const base = x.symbol.replace(/USDT$/, "");
-      const assetId = "bybit:" + base.toLowerCase();
-      try {
-        await sb("assets", "POST", { on_conflict: "asset_id" }, {
-          asset_id: assetId,
-          symbol: base,
-          name: base,
-          base_asset: base,
-          quote_asset: "USDT",
-          asset_type: "perpetual",
-          active: true,
-          last_seen_at: new Date().toISOString(),
-          metadata: { universe_source: "bybit_liquidity_bootstrap", turnover_24h: Number(x.turnover24h || 0) }
-        });
-      } catch (e) { recordError(e); }
-      assets.push({ id: assetId, symbol: base, rank: null, universeSource: "bybit_liquidity_bootstrap" });
-    }
-    state.assets = assets;
-    log("universe_refresh_bootstrap", { assets: state.assets.length, source: "bybit_liquidity_bootstrap" });
+  // Secondary source: previously persisted eligible assets. Never invent a fixed list.
+  const fallback=await sb("assets","GET",{select:"asset_id,symbol,metadata",active:"eq.true",limit:"100"});
+  const persisted=fallback.filter(x=>x.metadata?.universe_source==="dynamic_entry_eligibility")
+    .sort((a,b)=>Number(b.metadata?.eligibility_score||0)-Number(a.metadata?.eligibility_score||0)).slice(0,30);
+  if(persisted.length){
+    state.assets=persisted.map(x=>({id:x.asset_id,symbol:x.symbol.toUpperCase(),
+      rank:null,eligibilityScore:Number(x.metadata?.eligibility_score||0),universeSource:"persisted_dynamic"}));
+    log("universe_refresh_fallback",{assets:state.assets.length,source:"persisted_dynamic"});
     return;
   }
-  const marketCoins = coins
-    .filter(x => !x.symbol?.includes("usd") && !x.name?.toLowerCase().includes("wrapped"))
-    .slice(0, 30);
-
-  for (const x of coins) {
-    try {
-      await sb("assets", "POST", { on_conflict: "asset_id" }, {
-        asset_id: x.id,
-        symbol: x.symbol.toUpperCase(),
-        name: x.name,
-        base_asset: x.symbol.toUpperCase(),
-        quote_asset: "USD",
-        asset_type: "spot",
-        active: true,
-        last_seen_at: new Date().toISOString(),
-        metadata: { rank: x.market_cap_rank, market_cap_usd: x.market_cap, current_price: x.current_price }
-      });
-    } catch (e) { recordError(e); }
-  }
-  state.assets = marketCoins.map(x => ({ id: x.id, symbol: x.symbol.toUpperCase(), rank: x.market_cap_rank }));
-  log("universe_refresh_complete", { assets: state.assets.length });
+  throw new Error("No dynamic eligible universe available");
 }
 
-let pollTimer = null;
-const seenTradeIds = new Set();
-
-async function pollMarketData() {
-  const symbols = state.assets.map(x => x.symbol.toUpperCase() + "USDT").slice(0, 30);
-  if (!symbols.length) return;
-  const relay = await relayJson("snapshot_trades", symbols);
-  const receivedAt = new Date().toISOString();
-
-  for (const t of relay.trades || []) {
-    const asset = state.assets.find(x => x.symbol.toUpperCase() + "USDT" === String(t.symbol).toUpperCase());
-    if (!asset) continue;
-    const tradeId = String(t.i || t.execId || ((t.T || t.time || receivedAt) + ":" + (t.p || t.price) + ":" + (t.v || t.size) + ":" + (t.S || t.side)));
-    if (seenTradeIds.has(asset.id + ":" + tradeId)) continue;
-    seenTradeIds.add(asset.id + ":" + tradeId);
-    if (seenTradeIds.size > 10000) {
-      const first = seenTradeIds.values().next().value;
-      seenTradeIds.delete(first);
-    }
-    state.lastTrade = receivedAt;
-    state.counts.trades++;
-    await sb("trades", "POST", { on_conflict: "exchange,asset_id,trade_id" }, {
-      asset_id: asset.id, exchange: "BYBIT", trade_id: tradeId,
-      observed_at: new Date(Number(t.T || t.time)).toISOString(), price: Number(t.p || t.price),
-      quantity: Number(t.v || t.size), side: (t.S || t.side) === "Buy" ? "BUY" : "SELL",
-      is_buyer_maker: (t.S || t.side) !== "Buy", status: "LIVE",
-      metadata: { symbol: t.symbol, received_at: receivedAt, source: "bybit_recent_trade_via_supabase_edge" }
-    }, { Prefer: "resolution=ignore-duplicates,return=minimal" });
-  }
-
-  for (const book of relay.books || []) {
-    const asset = state.assets.find(x => x.symbol.toUpperCase() + "USDT" === String(book.symbol).toUpperCase());
-    if (!asset || book.error) continue;
-    const bid = book.b?.[0], ask = book.a?.[0];
-    if (!bid || !ask) continue;
-    const bp = Number(bid[0]), bq = Number(bid[1]);
-    const ap = Number(ask[0]), aq = Number(ask[1]);
-    const mid = (bp + ap) / 2;
-    const imbalance = (bq - aq) / (bq + aq || 1);
-    const spreadBps = ((ap - bp) / mid) * 10000;
-    state.lastBook = receivedAt;
-    state.counts.books++;
-    await sb("orderbook_snapshots", "POST", {}, {
-      asset_id: asset.id, exchange: "BYBIT", observed_at: receivedAt,
-      best_bid: bp, best_ask: ap, spread_bps: spreadBps,
-      bid_depth: bp * bq, ask_depth: ap * aq, imbalance,
-      depth_levels: 1, status: "LIVE",
-      metadata: { symbol: book.symbol, received_at: receivedAt, source: "bybit_orderbook_via_supabase_edge" }
-    });
-  }
-
-  for (const x of relay.tickers || []) {
-    const asset = state.assets.find(a => a.symbol.toUpperCase() + "USDT" === String(x.symbol).toUpperCase());
-    if (!asset) continue;
-    const now = new Date().toISOString();
-    const price = Number(x.lastPrice || x.markPrice || x.indexPrice);
-    const prev = state.market.get(asset.id) || {};
-    state.market.set(asset.id, { ...asset, price, markPrice: Number(x.markPrice || 0), indexPrice: Number(x.indexPrice || 0), change24h: Number(x.price24hPcnt || x.change24h || 0) * (Math.abs(Number(x.price24hPcnt || x.change24h || 0)) < 1 ? 100 : 1), volume24h: Number(x.volume24h || 0), turnover24h: Number(x.turnover24h || 0), high24h: Number(x.highPrice24h || 0), low24h: Number(x.lowPrice24h || 0), updatedAt: now });
-    if (x.fundingRate !== undefined) {
-      await sb("funding", "POST", {}, {
-        asset_id: asset.id, exchange: "BYBIT", observed_at: now,
-        funding_rate: Number(x.fundingRate),
-        next_funding_at: x.nextFundingTime ? new Date(Number(x.nextFundingTime)).toISOString() : null,
-        mark_price: Number(x.markPrice), index_price: Number(x.indexPrice), status: "LIVE"
-      });
-      state.lastDeriv = now;
-      state.counts.derivatives++;
-    }
-  }
-}
-
-function connect() {
-  if (pollTimer) return;
-  log("bybit_relay_polling_start");
-  pollMarketData().catch(e => { recordError(e); writeStatus("DELAYED", e.message); });
-  pollTimer = setInterval(() => {
-    pollMarketData().catch(e => { recordError(e); writeStatus("DELAYED", e.message); });
-  }, 5000);
-}
-
-async function safeRead(table, params = {}) {
-  try { return await sb(table, "GET", params); }
-  catch (e) { recordError(e); return []; }
-}
-
-async function dashboardData() {
-  const [signals, paperTrades, providers] = await Promise.all([
-    safeRead("latest_signals", { select: "*", limit: "50" }),
-    safeRead("latest_paper_trades", { select: "*", limit: "50" }),
-    safeRead("provider_status", { select: "*", limit: "20" })
-  ]);
-  return {
-    generatedAt: new Date().toISOString(),
-    health: {
-      ok: state.ready, mode: "live", bootStage: state.bootStage,
-      startedAt: state.startedAt, assets: state.assets.length,
-      lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv,
-      counts: state.counts, errors: state.errors.slice(-5)
-    },
-    assets: state.assets.map(a => state.market.get(a.id) || a), signals, paperTrades, providers,
-    market: Array.from(state.market.values()),
-  };
-}
-
-async function emitSafetyNoTrade() {
-  try {
-    const ks = await safeRead("kill_switch", { select: "enabled,reason", id: "eq.1", limit: "1" });
-    const kill = ks[0];
-    const activeModels = await safeRead("model_versions", { select: "model_id,status", status: "eq.ACTIVE", limit: "1" });
-    if (kill?.enabled || activeModels.length) return;
-    const now = new Date().toISOString();
-    for (const asset of state.assets) {
-      const latestBook = await safeRead("orderbook_snapshots", {
-        select: "observed_at,best_bid,best_ask,imbalance,spread_bps",
-        asset_id: "eq." + asset.id,
-        order: "observed_at.desc",
-        limit: "1"
-      });
-      const book = latestBook[0];
-      const freshBook = book && Date.now() - Date.parse(book.observed_at) < 30000;
-      const dataQuality = freshBook ? "LIVE_NO_VALIDATED_MODEL" : "STALE_CORE_DATA";
-      await sb("signals", "POST", {}, {
-        asset_id: asset.id,
-        created_at: now,
-        horizon: "H1",
-        signal: "NO TRADE",
-        entry: book?.best_bid && book?.best_ask ? (Number(book.best_bid) + Number(book.best_ask)) / 2 : null,
-        stop_loss: null,
-        target_1: null,
-        target_2: null,
-        target_3: null,
-        p_t1: null,
-        p_t2: null,
-        p_t3: null,
-        expected_value: null,
-        risk_state: freshBook ? "MODEL_NOT_VALIDATED" : "CORE_DATA_STALE",
-        data_quality: dataQuality,
-        model_id: null,
-        feature_version: "safety-gate-v1",
-        reasons: [{ code: freshBook ? "MODEL_NOT_VALIDATED" : "CORE_DATA_STALE", message: freshBook ? "No validated probability model is active; directional signals are disabled." : "Core order-book data is stale; directional signals are disabled." }],
-        snapshot: { observed_at: now, book_observed_at: book?.observed_at || null, imbalance: book?.imbalance ?? null, spread_bps: book?.spread_bps ?? null },
-        immutable: true
-      }, { Prefer: "return=minimal" });
-    }
-  } catch (e) {
-    recordError(e);
-  }
-}
-
-function sendJson(res, value, status = 200) {
-  res.statusCode = status;
-  res.setHeader("content-type", "application/json; charset=utf-8");
-  res.setHeader("cache-control", "no-store");
-  res.setHeader("x-content-type-options", "nosniff");
-  res.end(JSON.stringify(value));
-}
-
-async function serveStatic(req, res) {
-  const pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
-  const rel = pathname === "/" ? "index.html" : pathname.slice(1);
-  const file = normalize(join(PUBLIC_DIR, rel));
-  if (!file.startsWith(PUBLIC_DIR)) return sendJson(res, { error: "not_found" }, 404);
-  try {
-    const data = await readFile(file);
-    const ext = extname(file);
-    const type = ext === ".html" ? "text/html; charset=utf-8"
-      : ext === ".js" ? "text/javascript; charset=utf-8"
-      : ext === ".css" ? "text/css; charset=utf-8"
-      : "application/octet-stream";
-    res.statusCode = 200;
-    res.setHeader("content-type", type);
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("x-content-type-options", "nosniff");
-    res.end(data);
-  } catch { sendJson(res, { error: "not_found" }, 404); }
-}
-
-async function refreshDerivatives() {
-  try {
-    await pollMarketData();
-  } catch (e) { recordError(e); }
-}
-async function main() {
-  try {
-    state.bootStage = "supabase";
-    log("boot_supabase");
-    await writeStatus("CONNECTING", "boot");
-
-    state.bootStage = "universe";
-    await refreshUniverse();
-
-    state.bootStage = "market_relay";
-    connect();
-
-    state.bootStage = "derivatives";
-    await refreshDerivatives();
-
-    await emitSafetyNoTrade();
-    setInterval(() => refreshUniverse().catch(e => { recordError(e); writeStatus("DELAYED", e.message); }), 10 * 60 * 1000);
-    setInterval(() => emitSafetyNoTrade(), 60 * 1000);
-    setInterval(() => refreshDerivatives().catch(recordError), 60 * 1000);
-    setInterval(() => {
-      const fresh = state.lastTrade && Date.now() - Date.parse(state.lastTrade) < 20000;
-      writeStatus(fresh ? "LIVE" : "STALE", "heartbeat");
-    }, 15000);
-
-    state.bootStage = "ready";
-    state.ready = true;
-    log("engine_ready", { assets: state.assets.length });
-    await writeStatus("LIVE", "engine ready");
-  } catch (e) {
-    state.bootStage = "degraded";
-    state.ready = true;
-    recordError(e);
-    await writeStatus("UNAVAILABLE", String(e?.message || e));
-    log("engine_boot_degraded");
-  }
-}
-
-const server = http.createServer(async (req, res) => {
-  try {
-    const path = new URL(req.url, "http://localhost").pathname;
-    if (path === "/api/health") {
-      return sendJson(res, {
-        ok: true, ready: state.ready, mode: "live", bootStage: state.bootStage,
-        startedAt: state.startedAt, assets: state.assets.length,
-        lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv,
-        counts: state.counts, errors: state.errors.slice(-5)
-      }, state.ready ? 200 : 503);
-    }
-    if (path === "/api/market") return sendJson(res, {
-      assets: state.assets.map(a => state.market.get(a.id) || a), counts: state.counts,
-      lastTrade: state.lastTrade, lastBook: state.lastBook, lastDeriv: state.lastDeriv
-    });
-    if (path === "/api/dashboard") return sendJson(res, await dashboardData());
-    if (path === "/api/signals") return sendJson(res, await safeRead("latest_signals", { select: "*", limit: "100" }));
-    if (path === "/api/paper") return sendJson(res, await safeRead("latest_paper_trades", { select: "*", limit: "100" }));
-    if (path === "/api/providers") return sendJson(res, await safeRead("provider_status", { select: "*", limit: "50" }));
-    if (path.startsWith("/api/")) return sendJson(res, { error: "not_found" }, 404);
-    return serveStatic(req, res);
-  } catch (e) {
-    recordError(e);
-    return sendJson(res, { error: "server_error", message: String(e?.message || e) }, 500);
-  }
-});
-
-server.listen(PORT, HOST, () => {
-  log("http_server_listening", { host: HOST, port: PORT });
-  main();
-});
-
-process.on("SIGTERM", () => {
-  if (pollTimer) clearInterval(pollTimer);
-  server.close(() => process.exit(0));
-});
-// Market-data access fix: Bybit relay through Supabase Edge Singapore.
-// Source sync: keep Railway main-branch deployment aligned with repository head.
