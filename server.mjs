@@ -240,11 +240,11 @@ async function trainCalibration(force = false) {
   state.lastTrainingAt = now;
   try {
     const rows = await sb("signal_outcomes", "GET", {
-      select: "signal_id,outcome,evaluation_version",
-      evaluation_version: "eq.paper_v2",
+      select: "signal_id,outcome,evaluation_version,holding_seconds",
       limit: "5000"
     });
-    const usable = rows.filter(x => x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS));\n    const ids = usable.map(x => x.signal_id);
+    const usable = rows.filter(x => x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS));
+    const ids = usable.map(x => x.signal_id);
     if (!ids.length) {
       state.calibration = { ...state.calibration, trainedAt: iso(), sampleCount: 0, status: "WAITING_FOR_V2_OUTCOMES" };
       return state.calibration;
@@ -492,8 +492,13 @@ function computeSignal(asset, feat) {
   const t2 = price * (1 + sign * riskPct * 2);
   const t3 = price * (1 + sign * riskPct * 3);
 
-  if (feat.reason_codes?.includes("NO_MATERIAL_MOVE") || feat.reason_codes?.includes("FLOW_PRICE_CONFLICT")) {\n    return { action: "NO TRADE", reason: "feature_conflict_gate" };\n  }\n  const strength = clamp(Math.abs(alignment), 0, 1);
-  const rawProbabilityT1 = clamp(0.50 + strength * 0.32 + Math.max(0, finite(feat.cvd_10m)) * 0.06, 0.51, 0.88);\n  const calibrated = state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;\n  const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);
+  if (feat.reason_codes?.includes("NO_MATERIAL_MOVE") || feat.reason_codes?.includes("FLOW_PRICE_CONFLICT")) {
+    return { action: "NO TRADE", reason: "feature_conflict_gate" };
+  }
+  const strength = clamp(Math.abs(alignment), 0, 1);
+  const rawProbabilityT1 = clamp(0.50 + strength * 0.32 + Math.max(0, finite(feat.cvd_10m)) * 0.06, 0.51, 0.88);
+  const calibrated = state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;
+  const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);
   const expectedReturn = probabilityT1 * riskPct - (1 - probabilityT1) * riskPct;
   const riskState = spread < 6 && strength >= 0.45 ? "NORMAL" : "CAUTION";
   const reasons = [
@@ -732,7 +737,9 @@ async function managePaperTrades() {
     const market = state.market.get(assetId);
     const price = finite(market?.price);
     if (!price) continue;
-    const meta = trade.metadata || {};\n    const openedAtMs = Date.parse(trade.opened_at);\n    const ageSeconds = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
+    const meta = trade.metadata || {};
+    const openedAtMs = Date.parse(trade.opened_at);
+    const ageSeconds = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
     const side = String(trade.side || "").toUpperCase();
     const stop = finite(meta.stop_loss);
     const t3 = finite(meta.target_3);
@@ -747,7 +754,8 @@ async function managePaperTrades() {
       else if (t3 && price <= t3) { outcome = "TARGET_3"; exitPrice = t3; }
     }
 
-    if (!outcome && ageSeconds >= MAX_HORIZON_SECONDS) { outcome = "TIMEOUT"; exitPrice = price; }\n    if (!outcome) continue;
+    if (!outcome && ageSeconds >= MAX_HORIZON_SECONDS) { outcome = "TIMEOUT"; exitPrice = price; }
+    if (!outcome) continue;
     const entry = finite(trade.entry_price);
     const qty = finite(trade.quantity);
     const gross = side === "LONG" ? (exitPrice - entry) * qty : (entry - exitPrice) * qty;
@@ -1201,7 +1209,8 @@ async function boot() {
   requireConfigured();
   await readKillSwitch();
   await ensureFeatureRegistry();
-  await ensureModel();\n  await trainCalibration(true);
+  await ensureModel();
+  await trainCalibration(true);
 
   state.bootStage = "universe";
   await refreshUniverse();
@@ -1223,7 +1232,8 @@ async function boot() {
     paper_only: true
   });
 
-  setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);\n  setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
+  setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);
+  setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
   await pollMarketData();
 }
