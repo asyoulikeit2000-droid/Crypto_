@@ -17,6 +17,8 @@ const FEATURE_VERSION = "v2.0";
 const MODEL_ID = "rules_v2_adaptive";
 const TRAIN_INTERVAL_MS = 10 * 60 * 1000;
 const MAX_HORIZON_SECONDS = 3600;
+const PAPER_FEE_RATE = Number(process.env.PAPER_FEE_RATE || 0.00055);
+const PAPER_SLIPPAGE_RATE = Number(process.env.PAPER_SLIPPAGE_RATE || 0.00015);
 const FEATURE_DEFS = [
   ["return_1m","1m price return","technical","H1","Log return over recent trade prices",["market_ticks","trades"]],
   ["return_5m","5m price return","technical","H1","Log return over a five-minute window",["market_ticks","trades"]],
@@ -811,8 +813,8 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
       side: decisionSnapshot.action,
       entry_price: decisionSnapshot.entry,
       quantity: qty,
-      fees: 0,
-      slippage: 0,
+      fees: notional * PAPER_FEE_RATE,
+      slippage: notional * PAPER_SLIPPAGE_RATE,
       funding_cost: 0,
       realized_pnl: null,
       status: "OPEN",
@@ -909,7 +911,7 @@ async function managePaperTrades() {
 
       const qty = finite(trade.quantity);
       const gross = side === "LONG" ? (exitPrice - entry) * qty : (entry - exitPrice) * qty;
-      const costs = finite(trade.fees) + finite(trade.slippage) + finite(trade.funding_cost);
+      const exitNotional = Math.abs(exitPrice * qty);\n      const entryNotional = Math.abs(entry * qty);\n      const costs = finite(trade.fees) + finite(trade.slippage) + (exitNotional * PAPER_FEE_RATE) + (exitNotional * PAPER_SLIPPAGE_RATE) + finite(trade.funding_cost);
       const net = gross - costs;
 
       await sb("paper_trades", "PATCH", {
