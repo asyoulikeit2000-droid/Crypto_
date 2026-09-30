@@ -547,7 +547,8 @@ function computeSignal(asset, feat) {
   const strength = clamp(Math.abs(alignment), 0, 1);
   const rawProbabilityT1 = clamp(0.50 + strength * 0.32 + Math.max(0, finite(feat.cvd_10m)) * 0.06, 0.51, 0.88);
   const calibrated = state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;
-  const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);\n  if (state.calibration.status === "EDGE_NOT_CONFIRMED") return { action: "NO TRADE", reason: "learning_hold_no_confirmed_edge" };
+  const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);
+  if (state.calibration.status === "EDGE_NOT_CONFIRMED") return { action: "NO TRADE", reason: "learning_hold_no_confirmed_edge" };
   const expectedReturn = probabilityT1 * riskPct - (1 - probabilityT1) * riskPct;
   const riskState = spread < 6 && strength >= 0.45 ? "NORMAL" : "CAUTION";
   const reasons = [
@@ -831,10 +832,10 @@ async function managePaperTrades() {
       exit_price: exitPrice,
       pnl_before_cost: gross,
       pnl_after_cost: net,
-      holding_seconds: Math.max(0, Math.floor((Date.now() - Date.parse(trade.opened_at)) / 1000)),
+      holding_seconds: Math.min(MAX_HORIZON_SECONDS, Math.max(0, Math.floor((Date.now() - Date.parse(trade.opened_at)) / 1000))),
       mfe: null,
       mae: null,
-      evaluation_version: "paper_v1"
+      evaluation_version: "paper_v2"
     }, { Prefer: "resolution=merge-duplicates,return=minimal" });
   }
 }
@@ -1138,7 +1139,8 @@ async function dashboardPayload() {
       lastPipelineRun: state.lastPipelineRun,
       assets: state.assets.length,
       counts: state.counts,
-      killSwitch: state.killSwitch,\n      calibration: state.calibration,
+      killSwitch: state.killSwitch,
+      calibration: state.calibration,
       errors
     },
     market: publicMarket(),
