@@ -337,7 +337,7 @@ async function trainCalibration(force = false) {
         sample_count: used,
         max_horizon_seconds: MAX_HORIZON_SECONDS
       },
-      status: calibrationActive ? "PRODUCTION_RULES_CALIBRATED" : "LEARNING_HOLD"
+      status: calibrationActive ? "PRODUCTION_RULES_CALIBRATED" : "SHADOW_CALIBRATING"
     });
     return state.calibration;
   } catch (e) {
@@ -743,7 +743,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     p_t3: decision.pT3,
     expected_return: decision.expectedValue,
     expected_loss: Math.max(0, 1 - decision.pT1),
-    calibration_version: "rules-v1",
+    calibration_version: state.calibration.trainedAt ? (MODEL_ID + "@" + state.calibration.trainedAt) : "uncalibrated",
     feature_snapshot: snapshot
   });
 
