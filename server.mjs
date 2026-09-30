@@ -840,62 +840,109 @@ async function managePaperTrades() {
     limit: "200"
   });
   for (const trade of open) {
-    const assetId = trade.metadata?.asset_id;
-    const market = state.market.get(assetId);
-    const price = finite(market?.price);
-    if (!price) continue;
-    const meta = trade.metadata || {};
-    const openedAtMs = Date.parse(trade.opened_at);
-    const ageSeconds = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
-    const side = String(trade.side || "").toUpperCase();
-    const stop = finite(meta.stop_loss);
-    const t3 = finite(meta.target_3);
-    let outcome = null;
-    let exitPrice = null;
+    try {
+      const assetId = trade.metadata?.asset_id;
+      const market = state.market.get(assetId);
+      const currentPrice = finite(market?.price);
+      if (!currentPrice) continue;
 
-    if (side === "LONG") {
-      if (stop && price <= stop) { outcome = "STOP_LOSS"; exitPrice = stop; }
-      else if (t3 && price >= t3) { outcome = "TARGET_3"; exitPrice = t3; }
-    } else if (side === "SHORT") {
-      if (stop && price >= stop) { outcome = "STOP_LOSS"; exitPrice = stop; }
-      else if (t3 && price <= t3) { outcome = "TARGET_3"; exitPrice = t3; }
+      const meta = trade.metadata || {};
+      const openedAtMs = Date.parse(trade.opened_at);
+      const ageSeconds = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
+      const side = String(trade.side || "").toUpperCase();
+      const entry = finite(trade.entry_price);
+      const stop = finite(meta.stop_loss);
+      const t1 = finite(meta.target_1);
+      const t2 = finite(meta.target_2);
+      const t3 = finite(meta.target_3);
+
+      const ticks = await sb("market_ticks", "GET", {
+        select: "observed_at,price",
+        asset_id: "eq." + assetId,
+        observed_at: "gte." + trade.opened_at,
+        order: "observed_at.asc",
+        limit: "5000"
+      });
+      const path = ticks.map(x => finite(x.price)).filter(x => x > 0);
+      if (!path.length) path.push(currentPrice);
+      const allPrices = [...path, currentPrice];
+
+      let mfe = 0;
+      let mae = 0;
+      let t1Hit = false, t2Hit = false, t3Hit = false, slHit = false;
+      for (const p of allPrices) {
+        const favorable = side === "LONG" ? (p - entry) / entry : (entry - p) / entry;
+        const adverse = side === "LONG" ? (entry - p) / entry : (p - entry) / entry;
+        mfe = Math.max(mfe, favorable);
+        mae = Math.max(mae, adverse);
+        if (side === "LONG") {
+          t1Hit ||= Boolean(t1 && p >= t1);
+          t2Hit ||= Boolean(t2 && p >= t2);
+          t3Hit ||= Boolean(t3 && p >= t3);
+          slHit ||= Boolean(stop && p <= stop);
+        } else if (side === "SHORT") {
+          t1Hit ||= Boolean(t1 && p <= t1);
+          t2Hit ||= Boolean(t2 && p <= t2);
+          t3Hit ||= Boolean(t3 && p <= t3);
+          slHit ||= Boolean(stop && p >= stop);
+        }
+      }
+
+      let outcome = null;
+      let exitPrice = null;
+      if (t3Hit && slHit) {
+        // Conservative bar/tick ambiguity handling: earliest observed threshold wins.
+        for (const p of allPrices) {
+          const stopFirst = side === "LONG" ? p <= stop : p >= stop;
+          const targetFirst = side === "LONG" ? p >= t3 : p <= t3;
+          if (stopFirst) { outcome = "STOP_LOSS"; exitPrice = stop; break; }
+          if (targetFirst) { outcome = "TARGET_3"; exitPrice = t3; break; }
+        }
+      } else if (t3Hit) {
+        outcome = "TARGET_3"; exitPrice = t3;
+      } else if (slHit) {
+        outcome = "STOP_LOSS"; exitPrice = stop;
+      } else if (ageSeconds >= MAX_HORIZON_SECONDS) {
+        outcome = "TIMEOUT"; exitPrice = currentPrice;
+      }
+      if (!outcome) continue;
+
+      const qty = finite(trade.quantity);
+      const gross = side === "LONG" ? (exitPrice - entry) * qty : (entry - exitPrice) * qty;
+      const costs = finite(trade.fees) + finite(trade.slippage) + finite(trade.funding_cost);
+      const net = gross - costs;
+
+      await sb("paper_trades", "PATCH", {
+        paper_trade_id: "eq." + trade.paper_trade_id
+      }, {
+        closed_at: iso(),
+        exit_price: exitPrice,
+        realized_pnl: net,
+        status: "CLOSED"
+      });
+
+      await sb("signal_outcomes", "POST", { on_conflict: "signal_id" }, {
+        signal_id: trade.signal_id,
+        evaluated_at: iso(),
+        outcome,
+        t1_hit: t1Hit,
+        t2_hit: t2Hit,
+        t3_hit: t3Hit,
+        sl_hit: slHit,
+        exit_price: exitPrice,
+        pnl_before_cost: gross,
+        pnl_after_cost: net,
+        holding_seconds: Math.min(MAX_HORIZON_SECONDS, ageSeconds),
+        mfe,
+        mae,
+        evaluation_version: "paper_v2"
+      }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+    } catch (e) {
+      recordError(e, "paper_trade:" + trade.paper_trade_id);
     }
-
-    if (!outcome && ageSeconds >= MAX_HORIZON_SECONDS) { outcome = "TIMEOUT"; exitPrice = price; }
-    if (!outcome) continue;
-    const entry = finite(trade.entry_price);
-    const qty = finite(trade.quantity);
-    const gross = side === "LONG" ? (exitPrice - entry) * qty : (entry - exitPrice) * qty;
-    const costs = finite(trade.fees) + finite(trade.slippage) + finite(trade.funding_cost);
-    const net = gross - costs;
-
-    await sb("paper_trades", "PATCH", {
-      paper_trade_id: "eq." + trade.paper_trade_id
-    }, {
-      closed_at: iso(),
-      exit_price: exitPrice,
-      realized_pnl: net,
-      status: "CLOSED"
-    });
-
-    await sb("signal_outcomes", "POST", { on_conflict: "signal_id" }, {
-      signal_id: trade.signal_id,
-      evaluated_at: iso(),
-      outcome,
-      t1_hit: outcome === "TARGET_3",
-      t2_hit: outcome === "TARGET_3",
-      t3_hit: outcome === "TARGET_3",
-      sl_hit: outcome === "STOP_LOSS",
-      exit_price: exitPrice,
-      pnl_before_cost: gross,
-      pnl_after_cost: net,
-      holding_seconds: Math.min(MAX_HORIZON_SECONDS, Math.max(0, Math.floor((Date.now() - Date.parse(trade.opened_at)) / 1000))),
-      mfe: null,
-      mae: null,
-      evaluation_version: "paper_v2"
-    }, { Prefer: "resolution=merge-duplicates,return=minimal" });
   }
 }
+
 
 async function writeDataQuality() {
   const now = Date.now();
