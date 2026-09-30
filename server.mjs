@@ -244,7 +244,7 @@ async function trainCalibration(force = false) {
       evaluation_version: "eq.paper_v2",
       limit: "5000"
     });
-    const ids = rows.map(x => x.signal_id);
+    const usable = rows.filter(x => x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS));\n    const ids = usable.map(x => x.signal_id);
     if (!ids.length) {
       state.calibration = { ...state.calibration, trainedAt: iso(), sampleCount: 0, status: "WAITING_FOR_V2_OUTCOMES" };
       return state.calibration;
@@ -257,7 +257,7 @@ async function trainCalibration(force = false) {
     const byId = new Map(signals.map(x => [x.signal_id, x]));
     let wins = 0;
     const dir = { LONG: { n: 0, w: 0 }, SHORT: { n: 0, w: 0 } };
-    for (const o of rows) {
+    for (const o of usable) {
       const s = byId.get(o.signal_id);
       if (!s) continue;
       const win = o.outcome === "TARGET_3" || o.outcome === "TARGET_1" || o.outcome === "TARGET_2";
@@ -265,7 +265,7 @@ async function trainCalibration(force = false) {
       const d = String(s.signal || "");
       if (dir[d]) { dir[d].n++; dir[d].w += win ? 1 : 0; }
     }
-    const n = rows.length;
+    const n = usable.length;
     const priorMean = 0.20, priorStrength = 12;
     const smooth = (w, count) => (w + priorMean * priorStrength) / (count + priorStrength);
     state.calibration = {
