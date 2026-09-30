@@ -15,6 +15,20 @@ const RELAY_URL = process.env.MARKET_RELAY_URL || (SB ? SB + "/functions/v1/mark
 const RELAY_KEY = process.env.MARKET_RELAY_KEY || "";
 const FEATURE_VERSION = "v2.0";
 const MODEL_ID = "rules_v1";
+const FEATURE_DEFS = [
+  ["return_1m","1m price return","technical","H1","Log return over recent trade prices",["market_ticks","trades"]],
+  ["return_5m","5m price return","technical","H1","Log return over a five-minute window",["market_ticks","trades"]],
+  ["return_15m","15m price return","technical","H1","Log return over a fifteen-minute window",["market_ticks","trades"]],
+  ["realized_vol","realized volatility","technical","H1","Recent trade-price realized volatility proxy",["trades"]],
+  ["cvd_2m","2m signed flow ratio","flow","H1","Signed notional flow divided by total notional over two minutes",["trades"]],
+  ["cvd_10m","10m signed flow ratio","flow","H1","Signed notional flow divided by total notional over ten minutes",["trades"]],
+  ["volume_2m_usd","2m volume","liquidity","H1","Trade notional observed over two minutes",["trades"]],
+  ["volume_10m_usd","10m volume","liquidity","H1","Trade notional observed over ten minutes",["trades"]],
+  ["orderbook_imbalance","orderbook imbalance","microstructure","H1","Top-level bid versus ask depth imbalance",["orderbook_snapshots"]],
+  ["spread_bps","spread","microstructure","H1","Best bid/ask spread in basis points",["orderbook_snapshots"]],
+  ["alignment","price-flow alignment","composite","H1","Directional alignment of price and signed flow",["market_ticks","trades","orderbook_snapshots"]],
+  ["microstructure_quality","microstructure quality gate","quality","H1","Freshness, spread and book-balance gate",["market_ticks","orderbook_snapshots","trades"]]
+];
 const POLL_MS = 5000;
 const UNIVERSE_REFRESH_MS = 10 * 60 * 1000;
 const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
@@ -184,6 +198,23 @@ async function writeProviderStatus(status, message = null, dataset = "engine", l
       recordError(e2, "provider_status");
     }
   }
+}
+
+async function ensureFeatureRegistry() {
+  const rows = FEATURE_DEFS.map(([feature_id, feature_name, family, horizon, definition, source_tables]) => ({
+    feature_id,
+    feature_name,
+    family,
+    horizon,
+    definition,
+    source_tables,
+    validation_status: "VALIDATED",
+    enabled: true,
+    version: FEATURE_VERSION
+  }));
+  await sb("feature_registry", "POST", { on_conflict: "feature_id" }, rows, {
+    Prefer: "resolution=merge-duplicates,return=minimal"
+  });
 }
 
 async function ensureModel() {
@@ -514,6 +545,24 @@ async function maybeWriteSignal(asset, feat, regime) {
     regime
   };
 
+  const setupRows = await sb("setup_candidates", "POST", {}, {
+    asset_id: asset.id,
+    detected_at: iso(),
+    horizon: decision.horizon,
+    direction: decision.action,
+    setup_type: "momentum_continuation",
+    status: "CANDIDATE",
+    evidence: {
+      reasons: decision.reasons,
+      alignment: feat.alignment,
+      spread_bps: feat.spread_bps,
+      regime: regime.regime,
+      probability_t1: decision.pT1
+    },
+    feature_snapshot: snapshot,
+    expires_at: iso(Date.now() + 15 * 60 * 1000)
+  }, { Prefer: "return=representation" });
+
   await sb("model_predictions", "POST", {}, {
     model_id: MODEL_ID,
     asset_id: asset.id,
@@ -580,11 +629,11 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
   if (!signal?.signal_id) return;
   try {
     const open = await sb("paper_trades", "GET", {
-      select: "paper_trade_id,signal_id,asset_id,status",
+      select: "paper_trade_id,signal_id,status,metadata",
       status: "eq.OPEN",
       limit: "200"
     });
-    if (open.some(x => x.asset_id === asset.id)) return;
+    if (open.some(x => x.metadata?.asset_id === asset.id)) return;
 
     const notional = 100;
     const qty = notional / finite(decisionSnapshot.entry, 1);
@@ -601,6 +650,8 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
       status: "OPEN",
       metadata: {
         simulation: true,
+        asset_id: asset.id,
+        symbol: asset.symbol,
         notional_usd: notional,
         stop_loss: decisionSnapshot.stopLoss,
         target_1: decisionSnapshot.target1,
@@ -616,12 +667,13 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
 
 async function managePaperTrades() {
   const open = await sb("paper_trades", "GET", {
-    select: "paper_trade_id,signal_id,asset_id,side,entry_price,quantity,opened_at,fees,slippage,funding_cost,metadata",
+    select: "paper_trade_id,signal_id,side,entry_price,quantity,opened_at,fees,slippage,funding_cost,metadata",
     status: "eq.OPEN",
     limit: "200"
   });
   for (const trade of open) {
-    const market = state.market.get(trade.asset_id);
+    const assetId = trade.metadata?.asset_id;
+    const market = state.market.get(assetId);
     const price = finite(market?.price);
     if (!price) continue;
     const meta = trade.metadata || {};
@@ -951,7 +1003,7 @@ async function dashboardPayload() {
     limit: "50"
   });
   const paperTrades = await sb("paper_trades", "GET", {
-    select: "paper_trade_id,signal_id,asset_id,opened_at,closed_at,side,entry_price,exit_price,quantity,realized_pnl,status",
+    select: "paper_trade_id,signal_id,opened_at,closed_at,side,entry_price,exit_price,quantity,realized_pnl,status,metadata",
     order: "opened_at.desc",
     limit: "30"
   });
@@ -984,7 +1036,11 @@ async function dashboardPayload() {
       probability: s.p_t1,
       entry_price: s.entry
     })),
-    paperTrades,
+    paperTrades: paperTrades.map(t => ({
+      ...t,
+      asset_id: t.metadata?.asset_id || null,
+      symbol: t.metadata?.symbol || state.assets.find(a => a.id === t.metadata?.asset_id)?.symbol || null
+    })),
     providers,
     quality: state.assets.map(a => {
       const m = state.market.get(a.id) || {};
@@ -1088,6 +1144,7 @@ async function boot() {
   state.bootStage = "configuring";
   requireConfigured();
   await readKillSwitch();
+  await ensureFeatureRegistry();
   await ensureModel();
 
   state.bootStage = "universe";
