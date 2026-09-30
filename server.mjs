@@ -1055,7 +1055,7 @@ async function pollMarketData() {
           updatedMarket.bid = book.best_bid;
           updatedMarket.ask = book.best_ask;
           state.market.set(asset.id, updatedMarket);
-          state.lastBook = book.observed_at;
+          state.lastBook = iso();
           state.intelligence.onBook(asset.id, {
             bestBid: book.best_bid,
             bestAsk: book.best_ask,
@@ -1098,7 +1098,7 @@ async function pollMarketData() {
               side: t.side,
               qty: t.quantity
             });
-            state.lastTrade = t.observed_at;
+            state.lastTrade = iso();
           }
         } catch (e) {
           recordError(e, "trades");
