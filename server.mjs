@@ -183,20 +183,13 @@ async function writeProviderStatus(status, message = null, dataset = "engine", l
     metadata: { runtime_revision: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown" }
   };
   try {
-    await sb("provider_status", "PATCH", {
-      provider: "eq.BYBIT_RELAY",
-      dataset: "eq." + dataset
-    }, payload);
-  } catch {
-    try {
-      await sb("provider_status", "POST", { on_conflict: "provider,dataset" }, {
-        provider: "BYBIT_RELAY",
-        dataset,
-        ...payload
-      }, { Prefer: "resolution=merge-duplicates,return=minimal" });
-    } catch (e2) {
-      recordError(e2, "provider_status");
-    }
+    await sb("provider_status", "POST", { on_conflict: "provider,dataset" }, {
+      provider: "BYBIT_RELAY",
+      dataset,
+      ...payload
+    }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+  } catch (e) {
+    recordError(e, "provider_status");
   }
 }
 
