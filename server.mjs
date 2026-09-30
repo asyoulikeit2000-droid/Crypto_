@@ -1262,7 +1262,12 @@ async function dashboardPayload() {
       killSwitch: state.killSwitch,
       calibration: state.calibration,
       validation: state.validation,
-      model: { id: MODEL_ID, featureVersion: FEATURE_VERSION },
+      model: { id: MODEL_ID, featureVersion: FEATURE_VERSION, horizon: "H1" },
+      tradingProfile: {
+        primary: "SWING_POSITIONAL",
+        secondary: "SCALP_CONDITIONAL",
+        note: "Current validated model horizon is H1; multi-hour and multi-day swing horizons require separate validation."
+      },
       safety: { paperOnly: true, executionEnabled: false, signalReady: modelSignalReady() },
       errors
     },
@@ -1333,7 +1338,12 @@ async function healthPayload() {
     lastPipelineRun: state.lastPipelineRun,
     calibration: state.calibration,
     validation: state.validation,
-    model: { id: MODEL_ID, featureVersion: FEATURE_VERSION },
+    model: { id: MODEL_ID, featureVersion: FEATURE_VERSION, horizon: "H1" },
+    tradingProfile: {
+      primary: "SWING_POSITIONAL",
+      secondary: "SCALP_CONDITIONAL",
+      note: "Current validated model horizon is H1; multi-hour and multi-day swing horizons require separate validation."
+    },
     errors: state.errors.slice(-10)
   };
 }
