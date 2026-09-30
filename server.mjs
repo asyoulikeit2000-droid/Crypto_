@@ -616,6 +616,242 @@ function klineRows(asset, list) {
   })).filter(x => x.open > 0 && x.high > 0 && x.low > 0 && x.close > 0);
 }
 
+function barBefore(bars, targetMs) {
+  let found = null;
+  for (const b of bars) {
+    const t = Date.parse(b.bucket_start);
+    if (!Number.isFinite(t)) continue;
+    if (t <= targetMs) found = b;
+    else break;
+  }
+  return found;
+}
+
+function meanNumbers(values) {
+  const xs = values.map(Number).filter(Number.isFinite);
+  return xs.length ? xs.reduce((a,b)=>a+b,0)/xs.length : 0;
+}
+
+function h4ShadowDecision(asset, bars) {
+  if (!Array.isArray(bars) || bars.length < 180) return { action: "NO TRADE", reason: "h4_insufficient_bars" };
+  const now = Date.now();
+  const latest = bars.at(-1);
+  const b1h = barBefore(bars, now - 60 * 60 * 1000);
+  const b4h = barBefore(bars, now - 4 * 60 * 60 * 1000);
+  if (!latest || !b1h || !b4h) return { action: "NO TRADE", reason: "h4_coverage_gap" };
+
+  const price = finite(state.market.get(asset.id)?.price || latest.close);
+  const c1 = finite(b1h.close), c4 = finite(b4h.close);
+  if (!price || !c1 || !c4) return { action: "NO TRADE", reason: "h4_price_missing" };
+
+  const r1h = Math.log(price / c1);
+  const r4h = Math.log(price / c4);
+  const recent = bars.filter(b => Date.parse(b.bucket_start) >= now - 60 * 60 * 1000);
+  const prior = bars.filter(b => {
+    const t = Date.parse(b.bucket_start);
+    return t >= now - 2 * 60 * 60 * 1000 && t < now - 60 * 60 * 1000;
+  });
+  const recentVol = meanNumbers(recent.map(x => x.volume));
+  const priorVol = meanNumbers(prior.map(x => x.volume));
+  const volumeRatio = priorVol > 0 ? recentVol / priorVol : 1;
+  const avgRange = meanNumbers(recent.map(x => {
+    const close = finite(x.close);
+    return close > 0 ? (finite(x.high) - finite(x.low)) / close : 0;
+  }));
+
+  let pathMove = 0;
+  for (let i=1;i<bars.length;i++) {
+    if (Date.parse(bars[i].bucket_start) < now - 4 * 60 * 60 * 1000) continue;
+    const a = finite(bars[i-1].close), b = finite(bars[i].close);
+    if (a > 0 && b > 0) pathMove += Math.abs(Math.log(b/a));
+  }
+  const efficiency = pathMove > 0 ? clamp(Math.abs(r4h) / pathMove, 0, 1) : 0;
+  const market = state.market.get(asset.id) || {};
+  const spread = finite(market.spreadBps, 999);
+  const fresh = Boolean(market.updatedAt && Date.now() - market.updatedAt < 20000);
+
+  if (!fresh || spread >= 10) return { action: "NO TRADE", reason: "h4_market_quality" };
+  if (Math.sign(r1h) !== Math.sign(r4h) || Math.abs(r4h) < 0.004 || Math.abs(r1h) < 0.001) {
+    return { action: "NO TRADE", reason: "h4_trend_alignment" };
+  }
+  if (efficiency < 0.10) return { action: "NO TRADE", reason: "h4_low_trend_efficiency" };
+
+  const direction = r4h > 0 ? "LONG" : "SHORT";
+  const sign = direction === "LONG" ? 1 : -1;
+  const riskPct = clamp(Math.max(0.005, avgRange * 2.5), 0.005, 0.03);
+  const rawP = clamp(0.52 + Math.min(0.14, Math.abs(r4h) * 5) + Math.min(0.05, Math.max(0, volumeRatio - 1) * 0.04) + efficiency * 0.08, 0.52, 0.82);
+  if (rawP < 0.60) return { action: "NO TRADE", reason: "h4_probability_gate" };
+
+  return {
+    action: direction,
+    horizon: "H4",
+    modelId: H4_MODEL_ID,
+    maxHorizonSeconds: H4_HORIZON_SECONDS,
+    entry: price,
+    stopLoss: price * (1 - sign * riskPct),
+    target1: price * (1 + sign * riskPct),
+    target2: price * (1 + sign * riskPct * 2),
+    target3: price * (1 + sign * riskPct * 3),
+    pT1: rawP,
+    pT2: clamp(rawP * 0.76, 0.30, 0.72),
+    pT3: clamp(rawP * 0.56, 0.20, 0.62),
+    expectedValue: rawP * riskPct - (1 - rawP) * riskPct,
+    riskState: "SHADOW",
+    reasons: ["h4_price_alignment","h4_trend_efficiency","h4_liquidity_pass","shadow_validation_only"],
+    research: { r1h, r4h, volumeRatio, efficiency, avgRange, bars: bars.length }
+  };
+}
+
+async function maybeWriteH4Shadow(asset, bars) {
+  if (state.killSwitch) return null;
+  const decision = h4ShadowDecision(asset, bars);
+  if (decision.action === "NO TRADE") return null;
+  const cooldownKey = "H4:" + asset.id;
+  const prior = state.lastSignalAt.get(cooldownKey) || 0;
+  if (Date.now() - prior < 30 * 60 * 1000) return null;
+
+  const snapshot = {
+    feature_version: FEATURE_VERSION,
+    model_id: H4_MODEL_ID,
+    generated_at: iso(),
+    signal_mode: "SHADOW",
+    asset: asset.symbol,
+    horizon: "H4",
+    research: decision.research
+  };
+
+  await sb("setup_candidates", "POST", {}, {
+    asset_id: asset.id,
+    detected_at: iso(),
+    horizon: "H4",
+    direction: decision.action,
+    setup_type: "swing_momentum_continuation",
+    status: "CANDIDATE",
+    evidence: { reasons: decision.reasons, probability_t1: decision.pT1, ...decision.research },
+    feature_snapshot: snapshot,
+    expires_at: iso(Date.now() + 60 * 60 * 1000)
+  });
+
+  await sb("model_predictions", "POST", {}, {
+    model_id: H4_MODEL_ID,
+    asset_id: asset.id,
+    predicted_at: iso(),
+    direction: decision.action,
+    p_t1: decision.pT1,
+    p_t2: decision.pT2,
+    p_t3: decision.pT3,
+    expected_return: decision.expectedValue,
+    expected_loss: Math.max(0, 1 - decision.pT1),
+    calibration_version: "shadow_uncalibrated",
+    feature_snapshot: snapshot
+  });
+
+  const rows = await sb("signals", "POST", {}, {
+    asset_id: asset.id,
+    created_at: iso(),
+    horizon: "H4",
+    signal: decision.action,
+    entry: decision.entry,
+    stop_loss: decision.stopLoss,
+    target_1: decision.target1,
+    target_2: decision.target2,
+    target_3: decision.target3,
+    p_t1: decision.pT1,
+    p_t2: decision.pT2,
+    p_t3: decision.pT3,
+    expected_value: decision.expectedValue,
+    risk_state: "SHADOW",
+    data_quality: "HIGH",
+    model_id: H4_MODEL_ID,
+    feature_version: FEATURE_VERSION,
+    reasons: decision.reasons,
+    snapshot,
+    immutable: true
+  }, { Prefer: "return=representation" });
+
+  const signal = rows?.[0];
+  if (!signal?.signal_id) return null;
+  state.lastSignalAt.set(cooldownKey, Date.now());
+  state.horizonResearch.H4.candidates++;
+  await maybeOpenPaperTrade(signal, asset, decision);
+  await writeSystemEvent("H4_SHADOW_SIGNAL_CREATED", "info", "swing_engine", asset.symbol + " " + decision.action, {
+    signal_id: signal.signal_id,
+    horizon: "H4",
+    probability: decision.pT1
+  });
+  return signal;
+}
+
+async function refreshHorizonResearch() {
+  try {
+    if (!state.assets.length) return;
+    const cutoff = iso(Date.now() - 26 * 60 * 60 * 1000);
+    const rows = await sb("ohlcv", "GET", {
+      select: "asset_id,bucket_start,open,high,low,close,volume",
+      timeframe: "eq.1m",
+      bucket_start: "gte." + cutoff,
+      order: "bucket_start.asc",
+      limit: "50000"
+    });
+    const current = new Set(state.assets.map(a => a.id));
+    const groups = new Map();
+    for (const row of rows) {
+      if (!current.has(row.asset_id)) continue;
+      if (!groups.has(row.asset_id)) groups.set(row.asset_id, []);
+      groups.get(row.asset_id).push(row);
+    }
+
+    let h4Ready = 0, d1Ready = 0;
+    const now = Date.now();
+    for (const asset of state.assets) {
+      const bars = groups.get(asset.id) || [];
+      const bars4h = bars.filter(x => Date.parse(x.bucket_start) >= now - 4 * 60 * 60 * 1000);
+      const bars24h = bars.filter(x => Date.parse(x.bucket_start) >= now - 24 * 60 * 60 * 1000);
+      const covers4h = bars.length && Date.parse(bars[0].bucket_start) <= now - 3.5 * 60 * 60 * 1000;
+      const covers24h = bars.length && Date.parse(bars[0].bucket_start) <= now - 22 * 60 * 60 * 1000;
+      if (bars4h.length >= 180 && covers4h) {
+        h4Ready++;
+        await maybeWriteH4Shadow(asset, bars);
+      }
+      if (bars24h.length >= 1000 && covers24h) d1Ready++;
+    }
+
+    const h4Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + H4_MODEL_ID, limit: "5000" });
+    const h4Ids = new Set(h4Signals.map(x => x.signal_id));
+    const outcomes = await sb("signal_outcomes", "GET", { select: "signal_id", limit: "5000" });
+    const h4Outcomes = outcomes.filter(x => h4Ids.has(x.signal_id)).length;
+
+    state.horizonResearch.H1 = { modelId: MODEL_ID, state: modelSignalReady() ? "VALIDATED" : "VALIDATING", outcomes: state.calibration.sampleCount || 0 };
+    state.horizonResearch.H4 = {
+      modelId: H4_MODEL_ID,
+      state: h4Ready >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING",
+      readyAssets: h4Ready,
+      candidates: h4Signals.length,
+      outcomes: h4Outcomes
+    };
+    state.horizonResearch.D1 = {
+      modelId: D1_MODEL_ID,
+      state: d1Ready >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING",
+      readyAssets: d1Ready,
+      candidates: 0,
+      outcomes: 0
+    };
+
+    await sb("model_versions", "PATCH", { model_id: "eq." + H4_MODEL_ID }, {
+      training_window: { type: "shadow_evidence_collection", ready_assets: h4Ready, candidate_count: h4Signals.length, outcome_count: h4Outcomes },
+      validation_metrics: { coverage_ready_assets: h4Ready, candidates: h4Signals.length, outcomes: h4Outcomes },
+      status: state.horizonResearch.H4.state
+    });
+    await sb("model_versions", "PATCH", { model_id: "eq." + D1_MODEL_ID }, {
+      training_window: { type: "data_warming", ready_assets: d1Ready, required_minutes: 1440 },
+      validation_metrics: { coverage_ready_assets: d1Ready },
+      status: state.horizonResearch.D1.state
+    });
+  } catch (e) {
+    recordError(e, "horizon_research");
+  }
+}
+
 function modelSignalReady() {
   const test = state.validation?.test || {};
   return state.calibration?.status === "ACTIVE" &&
@@ -1298,6 +1534,7 @@ async function dashboardPayload() {
       calibration: state.calibration,
       validation: state.validation,
       model: { id: MODEL_ID, featureVersion: FEATURE_VERSION, horizon: "H1" },
+      horizonResearch: state.horizonResearch,
       tradingProfile: {
         primary: "SWING_POSITIONAL",
         secondary: "SCALP_CONDITIONAL",
@@ -1374,6 +1611,7 @@ async function healthPayload() {
     calibration: state.calibration,
     validation: state.validation,
     model: { id: MODEL_ID, featureVersion: FEATURE_VERSION, horizon: "H1" },
+    horizonResearch: state.horizonResearch,
     tradingProfile: {
       primary: "SWING_POSITIONAL",
       secondary: "SCALP_CONDITIONAL",
@@ -1457,6 +1695,7 @@ async function boot() {
 
   state.bootStage = "live_market";
   await pollMarketData();
+  await refreshHorizonResearch();
   const readiness = healthReadiness();
   if (!readiness.universeReady || !readiness.live || !readiness.bookLive) {
     throw new Error("Live market readiness gate failed: universe=" + readiness.universeReady + ", trade=" + readiness.live + ", orderbook=" + readiness.bookLive);
@@ -1480,6 +1719,7 @@ async function boot() {
   });
 
   setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);
+  setInterval(() => refreshHorizonResearch().catch(e => recordError(e, "horizon_interval")), UNIVERSE_REFRESH_MS);
   setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
   setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), 6 * 60 * 60 * 1000);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
