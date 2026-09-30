@@ -582,7 +582,19 @@ function klineRows(asset, list) {
   })).filter(x => x.open > 0 && x.high > 0 && x.low > 0 && x.close > 0);
 }
 
+function modelSignalReady() {
+  const test = state.validation?.test || {};
+  return state.calibration?.status === "ACTIVE" &&
+    state.validation?.status === "COMPLETE" &&
+    finite(test.n) >= 20 &&
+    finite(test.avgPnl) > 0 &&
+    finite(test.totalPnl) > 0;
+}
+
 function computeSignal(asset, feat) {
+  if (!modelSignalReady()) {
+    return { action: "NO TRADE", reason: "model_validation_gate" };
+  }
   const price = finite(feat.price);
   const spread = finite(feat.spread_bps, 999);
   const fresh = Boolean(feat.data_fresh);
@@ -1251,7 +1263,7 @@ async function dashboardPayload() {
       calibration: state.calibration,
       validation: state.validation,
       model: { id: MODEL_ID, featureVersion: FEATURE_VERSION },
-      safety: { paperOnly: true, executionEnabled: false },
+      safety: { paperOnly: true, executionEnabled: false, signalReady: modelSignalReady() },
       errors
     },
     market: publicMarket(),
@@ -1306,6 +1318,8 @@ async function healthPayload() {
     source: "BYBIT_PUBLIC_MARKET_DATA",
     paperOnly: true,
     executionEnabled: false,
+    signalReady: modelSignalReady(),
+    signalGateReason: modelSignalReady() ? null : "Model has not yet demonstrated positive out-of-sample paper edge.",
     killSwitch: state.killSwitch,
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
