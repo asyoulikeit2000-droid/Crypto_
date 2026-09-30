@@ -1,2 +1,135 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#07111f"><title>Crypto Intelligence Terminal</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet"><link rel="stylesheet" href="/styles.css"></head><body><div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">CI</div><div><b>Crypto Intelligence</b><small>Market Signal Terminal</small></div></div><div class="nav-label">WORKSPACE</div><nav><button data-s="overview" class="on"><span>⌂</span>Overview</button><button data-s="signals"><span>◈</span>Signals</button><button data-s="market"><span>◒</span>Market</button><button data-s="paper"><span>◫</span>Paper Trading</button><button data-s="data"><span>◌</span>Data Quality</button><button data-s="system"><span>⚙</span>System</button></nav><div class="sidebar-bottom"><div class="safe-box"><span class="pulse"></span><div><strong id="status">CONNECTING</strong><small>Paper-only environment</small></div></div></div></aside><main><header class="topbar"><div class="title-wrap"><div class="eyebrow">PRIVATE MARKET INTELLIGENCE</div><h1 id="title">Overview</h1></div><div class="top-actions"><span class="live-pill"><i id="dot"></i><span id="topStatus">LIVE</span></span><button id="refresh" class="icon-btn" title="Refresh now">↻</button></div></header><section id="overview" class="active"><div class="hero-strip"><div><span class="eyebrow">ENGINE STATUS</span><div class="hero-line"><i id="heroDot"></i><strong id="hero">LIVE</strong><span class="mode-chip">SIGNAL-ONLY</span></div><p id="copy">Waiting for live telemetry.</p></div><div class="hero-meta"><span>Updated</span><strong id="updated">—</strong></div></div><div class="metrics"><article><span class="metric-icon">◎</span><small>ELIGIBLE UNIVERSE</small><strong id="assets">—</strong><em>assets monitored</em></article><article><span class="metric-icon">↯</span><small>TRADE EVENTS</small><strong id="trades">—</strong><em>ingested events</em></article><article><span class="metric-icon">▥</span><small>ORDER BOOK</small><strong id="books">—</strong><em>snapshots</em></article><article><span class="metric-icon">◈</span><small>DERIVATIVES</small><strong id="deriv">—</strong><em>observations</em></article></div><div class="panel" style="margin-bottom:18px"><div class="panel-head"><div><span class="eyebrow">SIGNAL READINESS</span><h3 id="modelGate">CHECKING</h3></div></div><p id="modelCopy" class="muted">Checking paper-validation status.</p><p id="validationStats" class="muted">—</p></div><div class="section-head"><div><span class="eyebrow">MARKET PULSE</span><h2>Live Market</h2><p>Fresh public-market telemetry across the current eligible universe.</p></div><span class="refresh-note">Auto-refresh · 10s</span></div><div id="liveMarket" class="market-grid"></div><div class="section-head"><div><span class="eyebrow">MODEL OUTPUT</span><h2>Current Signals</h2><p>Structured candidates produced by the intelligence pipeline.</p></div><button class="ghost-btn" data-jump="signals">View all →</button></div><div id="cards" class="cards"></div><div class="cols"><div class="panel"><div class="panel-head"><div><span class="eyebrow">UNIVERSE</span><h3>Market Universe</h3></div></div><div id="universe"></div></div><div class="panel"><div class="panel-head"><div><span class="eyebrow">INFRASTRUCTURE</span><h3>Provider Health</h3></div></div><div id="providers"></div></div></div></section><section id="signals"><div class="section-head"><div><span class="eyebrow">MODEL OUTPUT</span><h2>Signals</h2><p>Validated trade candidates and qualification state.</p></div></div><div class="panel" id="signalTable"></div></section><section id="market"><div class="section-head"><div><span class="eyebrow">MARKET DATA</span><h2>Market</h2><p>Current eligible universe and latest market observations.</p></div></div><div class="panel" id="marketTable"></div></section><section id="paper"><div class="section-head"><div><span class="eyebrow">VALIDATION</span><h2>Paper Trading</h2><p>Execution-free validation. No real orders are sent.</p></div><span class="mode-chip">NO LIVE EXECUTION</span></div><div class="panel" id="paperTable"></div></section><section id="data"><div class="section-head"><div><span class="eyebrow">DATA INTEGRITY</span><h2>Data Quality</h2><p>Freshness is part of signal validity.</p></div></div><div id="quality" class="quality"></div></section><section id="system"><div class="section-head"><div><span class="eyebrow">RUNTIME</span><h2>System</h2><p>Runtime and safety posture.</p></div></div><div class="cols"><div class="panel"><div class="panel-head"><div><span class="eyebrow">SAFETY</span><h3>Execution Guardrails</h3></div></div><ul class="checks"><li>Public market data only</li><li>No trade execution</li><li>Secret key stays server-side</li><li>Paper trading only</li></ul></div><div class="panel"><div class="panel-head"><div><span class="eyebrow">DIAGNOSTICS</span><h3>Recent Errors</h3></div></div><pre id="errors">None</pre></div></div></section></main></div><script src="/app.js"></script></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07111f">
+<title>Crypto Intelligence Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="app-shell">
+<aside class="sidebar">
+  <div class="brand"><div class="brand-mark">CI</div><div><b>Crypto Intelligence</b><small>Swing & Position Terminal</small></div></div>
+  <div class="nav-label">WORKSPACE</div>
+  <nav class="side-nav">
+    <button data-s="overview" class="on"><span>⌂</span>Overview</button>
+    <button data-s="signals"><span>◈</span>Signals</button>
+    <button data-s="market"><span>◒</span>Market</button>
+    <button data-s="paper"><span>◫</span>Paper</button>
+    <button data-s="data"><span>◌</span>Quality</button>
+    <button data-s="system"><span>⚙</span>System</button>
+  </nav>
+  <div class="sidebar-bottom">
+    <div class="safe-box"><span class="pulse"></span><div><strong id="status">CONNECTING</strong><small>Paper-only · no execution</small></div></div>
+  </div>
+</aside>
+
+<main>
+<header class="topbar">
+  <div class="title-wrap"><div class="eyebrow">PRIVATE MARKET INTELLIGENCE</div><h1 id="title">Overview</h1></div>
+  <div class="top-actions">
+    <span class="profile-pill">SWING / POSITION</span>
+    <span class="live-pill"><i id="dot"></i><span id="topStatus">CONNECTING</span></span>
+    <button id="refresh" class="icon-btn" title="Refresh">↻</button>
+  </div>
+</header>
+
+<section id="overview" class="active">
+  <div class="hero-strip">
+    <div>
+      <span class="eyebrow">ENGINE STATUS</span>
+      <div class="hero-line"><i id="heroDot"></i><strong id="hero">CONNECTING</strong><span class="mode-chip">PAPER-ONLY</span></div>
+      <p id="copy">Connecting to live telemetry.</p>
+    </div>
+    <div class="hero-meta"><span>Updated</span><strong id="updated">—</strong></div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-card primary"><span class="eyebrow">PRIMARY STYLE</span><strong>Swing / Positional</strong><p>Favor cleaner, higher-conviction setups and holding-time tolerance over frequent entries.</p></article>
+    <article class="profile-card"><span class="eyebrow">SECONDARY STYLE</span><strong>Conditional Scalping</strong><p>Only when liquidity, spread, freshness and short-term structure are favorable.</p></article>
+    <article class="profile-card caution"><span class="eyebrow">CURRENT MODEL</span><strong>H1 Validation</strong><p>Multi-hour and multi-day swing horizons are not yet independently validated.</p></article>
+  </div>
+
+  <div class="metrics">
+    <article><span class="metric-icon">◎</span><small>ELIGIBLE UNIVERSE</small><strong id="assets">—</strong><em>dynamic assets</em></article>
+    <article><span class="metric-icon">↯</span><small>TRADE EVENTS</small><strong id="trades">—</strong><em>ingested</em></article>
+    <article><span class="metric-icon">▥</span><small>ORDER BOOK</small><strong id="books">—</strong><em>snapshots</em></article>
+    <article><span class="metric-icon">◈</span><small>PAPER OUTCOMES</small><strong id="outcomesMetric">—</strong><em>evaluated</em></article>
+  </div>
+
+  <div class="validation-shell">
+    <div class="validation-head">
+      <div><span class="eyebrow">SIGNAL READINESS</span><h2 id="modelGate">CHECKING</h2><p id="modelCopy">Checking model validation.</p></div>
+      <div class="progress-wrap"><span id="gateScore">0 / 5 gates</span><div class="progress"><i id="gateBar"></i></div></div>
+    </div>
+    <div id="gateGrid" class="gate-grid"></div>
+    <div id="validationStats" class="validation-stats">—</div>
+  </div>
+
+  <div class="section-head">
+    <div><span class="eyebrow">MARKET PULSE</span><h2>Live Market</h2><p>Fast telemetry for the current eligible universe.</p></div>
+    <div class="market-tools">
+      <input id="marketSearch" class="search" placeholder="Search asset…" autocomplete="off">
+      <select id="marketSort" class="select"><option value="rank">Rank</option><option value="change">24h change</option><option value="volume">Volume</option></select>
+      <span class="refresh-note">Market · 2s</span>
+    </div>
+  </div>
+  <div id="liveMarket" class="market-grid"></div>
+
+  <div class="section-head">
+    <div><span class="eyebrow">ACTION LAYER</span><h2>Actionable Signals</h2><p>Only appears after every validation gate passes.</p></div>
+    <button class="ghost-btn" data-jump="signals">Signal history →</button>
+  </div>
+  <div id="cards" class="cards"></div>
+
+  <div class="cols">
+    <div class="panel"><div class="panel-head"><div><span class="eyebrow">UNIVERSE</span><h3>Top Ranked Assets</h3></div></div><div id="universe"></div></div>
+    <div class="panel"><div class="panel-head"><div><span class="eyebrow">INFRASTRUCTURE</span><h3>Provider Health</h3></div></div><div id="providers"></div></div>
+  </div>
+</section>
+
+<section id="signals">
+  <div class="section-head"><div><span class="eyebrow">SHADOW VALIDATION</span><h2>Signal History</h2><p>Historical candidates remain visible for analysis. They are not actionable unless the model is validated.</p></div></div>
+  <div class="notice" id="signalNotice"></div>
+  <div class="panel" id="signalTable"></div>
+</section>
+
+<section id="market">
+  <div class="section-head"><div><span class="eyebrow">MARKET DATA</span><h2>Universe Monitor</h2><p>Rank, price, 24h movement and liquidity context.</p></div></div>
+  <div class="panel" id="marketTable"></div>
+</section>
+
+<section id="paper">
+  <div class="section-head"><div><span class="eyebrow">VALIDATION</span><h2>Paper Trading</h2><p>Execution-free evidence collection.</p></div><span class="mode-chip">NO LIVE EXECUTION</span></div>
+  <div id="paperSummary" class="paper-summary"></div>
+  <div class="panel" id="paperTable"></div>
+</section>
+
+<section id="data">
+  <div class="section-head"><div><span class="eyebrow">DATA INTEGRITY</span><h2>Data Quality</h2><p>Freshness and provider health are part of signal validity.</p></div></div>
+  <div id="quality" class="quality"></div>
+</section>
+
+<section id="system">
+  <div class="section-head"><div><span class="eyebrow">RUNTIME</span><h2>System</h2><p>Safety posture and diagnostics.</p></div></div>
+  <div class="cols">
+    <div class="panel"><div class="panel-head"><div><span class="eyebrow">SAFETY</span><h3>Execution Guardrails</h3></div></div><ul class="checks"><li>Public market data only</li><li>No trade execution</li><li>Server-side secret handling</li><li>Paper trading only</li><li>Model gate required for actionable signals</li></ul></div>
+    <div class="panel"><div class="panel-head"><div><span class="eyebrow">DIAGNOSTICS</span><h3>Recent Errors</h3></div></div><pre id="errors">None</pre></div>
+  </div>
+</section>
+</main>
+</div>
+
+<nav class="mobile-nav">
+  <button data-s="overview" class="on"><span>⌂</span><small>Home</small></button>
+  <button data-s="signals"><span>◈</span><small>Signals</small></button>
+  <button data-s="market"><span>◒</span><small>Market</small></button>
+  <button data-s="paper"><span>◫</span><small>Paper</small></button>
+  <button data-s="system"><span>⚙</span><small>System</small></button>
+</nav>
+<script src="/app.js"></script>
+</body></html>
