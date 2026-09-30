@@ -15,6 +15,10 @@ const RELAY_URL = process.env.MARKET_RELAY_URL || (SB ? SB + "/functions/v1/mark
 const RELAY_KEY = process.env.MARKET_RELAY_KEY || "";
 const FEATURE_VERSION = "v2.0";
 const MODEL_ID = "rules_v2_adaptive";
+const H4_MODEL_ID = "rules_h4_swing_shadow_v1";
+const D1_MODEL_ID = "rules_d1_position_shadow_v1";
+const H4_HORIZON_SECONDS = 4 * 60 * 60;
+const D1_HORIZON_SECONDS = 24 * 60 * 60;
 const TRAIN_INTERVAL_MS = 10 * 60 * 1000;
 const MAX_HORIZON_SECONDS = 3600;
 const PAPER_FEE_RATE = Number(process.env.PAPER_FEE_RATE || 0.00055);
@@ -61,7 +65,12 @@ const state = {
   killSwitch: false,
   calibration: { trainedAt: null, sampleCount: 0, globalProbability: null, byDirection: {}, status: "UNTRAINED" },
   validation: { status: "NOT_RUN" },
-  lastTrainingAt: 0
+  lastTrainingAt: 0,
+  horizonResearch: {
+    H1: { modelId: MODEL_ID, state: "VALIDATING" },
+    H4: { modelId: H4_MODEL_ID, state: "DATA_WARMING", readyAssets: 0, candidates: 0, outcomes: 0 },
+    D1: { modelId: D1_MODEL_ID, state: "DATA_WARMING", readyAssets: 0, candidates: 0, outcomes: 0 }
+  }
 };
 
 function iso(ms = Date.now()) { return new Date(ms).toISOString(); }
@@ -235,6 +244,24 @@ async function ensureModel() {
     calibration_method: null,
     status: "PRODUCTION_RULES"
   }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+
+  for (const spec of [
+    { id: H4_MODEL_ID, horizon: "H4", family: "deterministic_swing_rules", target: "4h swing continuation shadow qualification" },
+    { id: D1_MODEL_ID, horizon: "D1", family: "deterministic_position_rules", target: "24h positional continuation shadow qualification" }
+  ]) {
+    await sb("model_versions", "POST", { on_conflict: "model_id" }, {
+      model_id: spec.id,
+      model_family: spec.family,
+      target_definition: spec.target,
+      horizon: spec.horizon,
+      feature_version: FEATURE_VERSION,
+      training_window: { type: "shadow_evidence_collection", note: "No live execution; independent horizon validation required." },
+      hyperparameters: {},
+      validation_metrics: {},
+      calibration_method: null,
+      status: "SHADOW_DATA_WARMING"
+    }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+  }
 }
 
 async function trainCalibration(force = false) {
@@ -243,7 +270,7 @@ async function trainCalibration(force = false) {
   state.lastTrainingAt = now;
   try {
     const rows = await sb("signal_outcomes", "GET", {
-      select: "signal_id,outcome,evaluation_version,holding_seconds",
+      select: "signal_id,outcome,t1_hit,evaluation_version,holding_seconds",
       limit: "5000"
     });
     const usable = rows.filter(x =>
@@ -257,8 +284,9 @@ async function trainCalibration(force = false) {
     }
 
     const signals = await sb("signals", "GET", {
-      select: "signal_id,signal,p_t1,expected_value",
+      select: "signal_id,signal,p_t1,expected_value,model_id",
       signal_id: "in.(" + ids.join(",") + ")",
+      model_id: "eq." + MODEL_ID,
       limit: "5000"
     });
     const byId = new Map(signals.map(x => [x.signal_id, x]));
@@ -272,7 +300,7 @@ async function trainCalibration(force = false) {
       const s = byId.get(o.signal_id);
       if (!s) continue;
       const p = clamp(finite(s.p_t1, 0.5), 0, 1);
-      const win = ["TARGET_1","TARGET_2","TARGET_3"].includes(o.outcome);
+      const win = Boolean(o.t1_hit);
       const y = win ? 1 : 0;
       wins += y; used++;
       brier += (p - y) ** 2;
@@ -294,7 +322,7 @@ async function trainCalibration(force = false) {
       calibrated_rate: b.n ? smooth(b.wins, b.n) : null
     }));
     const global = used ? smooth(wins, used) : null;
-    const calibrationActive = used >= 50 && global >= 0.50;
+    const calibrationActive = used >= 50 && Number.isFinite(brier) && Number.isFinite(global);
     state.calibration = {
       trainedAt: iso(),
       sampleCount: used,
@@ -348,12 +376,18 @@ async function trainCalibration(force = false) {
 
 async function runWalkForwardValidation() {
   try {
+    const modelSignals = await sb("signals", "GET", {
+      select: "signal_id",
+      model_id: "eq." + MODEL_ID,
+      limit: "5000"
+    });
+    const modelSignalIds = new Set(modelSignals.map(x => x.signal_id));
     const rows = await sb("signal_outcomes", "GET", {
       select: "signal_id,evaluated_at,outcome,pnl_after_cost,holding_seconds,evaluation_version",
       order: "evaluated_at.asc",
       limit: "5000"
     });
-    const usable = rows.filter(x =>
+    const usable = rows.filter(x => modelSignalIds.has(x.signal_id) &&
       (x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS))
     );
     if (usable.length < 20) {
@@ -591,10 +625,7 @@ function modelSignalReady() {
     finite(test.totalPnl) > 0;
 }
 
-function computeSignal(asset, feat) {
-  if (!modelSignalReady()) {
-    return { action: "NO TRADE", reason: "model_validation_gate" };
-  }
+function computeSignal(asset, feat, shadowMode = false) {
   const price = finite(feat.price);
   const spread = finite(feat.spread_bps, 999);
   const fresh = Boolean(feat.data_fresh);
@@ -618,7 +649,7 @@ function computeSignal(asset, feat) {
   }
   const strength = clamp(Math.abs(alignment), 0, 1);
   const rawProbabilityT1 = clamp(0.50 + strength * 0.32 + Math.max(0, finite(feat.cvd_10m)) * 0.06, 0.51, 0.88);
-  const calibrated = state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;
+  const calibrated = !shadowMode && state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;
   const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);
   const expectedReturn = probabilityT1 * riskPct - (1 - probabilityT1) * riskPct;
   const riskState = spread < 6 && strength >= 0.45 ? "NORMAL" : "CAUTION";
@@ -712,7 +743,8 @@ async function persistRegime(asset, feat, observedAt) {
 }
 
 async function maybeWriteSignal(asset, feat, regime) {
-  const decision = computeSignal(asset, feat);
+  const shadowMode = !modelSignalReady();
+  const decision = computeSignal(asset, feat, shadowMode);
   if (decision.action === "NO TRADE" || state.killSwitch) return null;
 
   const prior = state.lastSignalAt.get(asset.id) || 0;
@@ -722,6 +754,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     feature_version: FEATURE_VERSION,
     model_id: MODEL_ID,
     generated_at: iso(),
+    signal_mode: shadowMode ? "SHADOW" : "ACTIONABLE",
     asset: asset.symbol,
     feature: feat,
     regime
@@ -735,7 +768,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     setup_type: "momentum_continuation",
     status: "CANDIDATE",
     evidence: {
-      reasons: decision.reasons,
+      reasons: [...decision.reasons, shadowMode ? "shadow_validation_only" : "validated_model"],
       alignment: feat.alignment,
       spread_bps: feat.spread_bps,
       regime: regime.regime,
@@ -773,7 +806,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     p_t2: decision.pT2,
     p_t3: decision.pT3,
     expected_value: decision.expectedValue,
-    risk_state: decision.riskState,
+    risk_state: shadowMode ? "SHADOW" : decision.riskState,
     data_quality: feat.data_fresh && feat.microstructure_quality ? "HIGH" : "LOW",
     model_id: MODEL_ID,
     feature_version: FEATURE_VERSION,
@@ -795,16 +828,16 @@ async function maybeWriteSignal(asset, feat, regime) {
     entry_price: decision.entry,
     stop_loss: decision.stopLoss,
     target_1: decision.target1,
-    status: "VALIDATED"
+    status: shadowMode ? "SHADOW" : "VALIDATED"
   });
   state.recentSignals = state.recentSignals.slice(0, 50);
-  await writeSystemEvent("SIGNAL_CREATED", "info", "signal_engine", asset.symbol + " " + decision.action, {
+  await writeSystemEvent(shadowMode ? "SHADOW_SIGNAL_CREATED" : "SIGNAL_CREATED", "info", "signal_engine", asset.symbol + " " + decision.action, {
     signal_id: signal?.signal_id,
     probability: decision.pT1,
     expected_value: decision.expectedValue,
     regime: regime.regime
   });
-  return signal;
+  return { signal, decision, shadowMode };
 }
 
 async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
@@ -815,7 +848,7 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
       status: "eq.OPEN",
       limit: "200"
     });
-    if (open.some(x => x.metadata?.asset_id === asset.id)) return;
+    if (open.some(x => x.metadata?.asset_id === asset.id && (x.metadata?.horizon || "H1") === (decisionSnapshot.horizon || "H1"))) return;
 
     const notional = 100;
     const qty = notional / finite(decisionSnapshot.entry, 1);
@@ -835,6 +868,9 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
         asset_id: asset.id,
         symbol: asset.symbol,
         notional_usd: notional,
+        horizon: decisionSnapshot.horizon || "H1",
+        model_id: decisionSnapshot.modelId || MODEL_ID,
+        max_horizon_seconds: decisionSnapshot.maxHorizonSeconds || MAX_HORIZON_SECONDS,
         stop_loss: decisionSnapshot.stopLoss,
         target_1: decisionSnapshot.target1,
         target_2: decisionSnapshot.target2,
@@ -916,7 +952,7 @@ async function managePaperTrades() {
         outcome = "TARGET_3"; exitPrice = t3;
       } else if (slHit) {
         outcome = "STOP_LOSS"; exitPrice = stop;
-      } else if (ageSeconds >= MAX_HORIZON_SECONDS) {
+      } else if (ageSeconds >= finite(meta.max_horizon_seconds, MAX_HORIZON_SECONDS)) {
         outcome = "TIMEOUT"; exitPrice = currentPrice;
       }
       if (!outcome) continue;
@@ -947,7 +983,7 @@ async function managePaperTrades() {
         exit_price: exitPrice,
         pnl_before_cost: gross,
         pnl_after_cost: net,
-        holding_seconds: Math.min(MAX_HORIZON_SECONDS, ageSeconds),
+        holding_seconds: Math.min(finite(meta.max_horizon_seconds, MAX_HORIZON_SECONDS), ageSeconds),
         mfe,
         mae,
         evaluation_version: "paper_v2"
@@ -1186,11 +1222,10 @@ async function runIntelligencePipeline(batch) {
 
       await persistFeatures(asset, feat, observedAt);
       const regime = await persistRegime(asset, feat, observedAt);
-      const signal = await maybeWriteSignal(asset, feat, regime);
+      const generated = await maybeWriteSignal(asset, feat, regime);
 
-      if (signal) {
-        const decision = computeSignal(asset, feat);
-        await maybeOpenPaperTrade(signal, asset, decision);
+      if (generated?.signal) {
+        await maybeOpenPaperTrade(generated.signal, asset, generated.decision);
       }
     } catch (e) {
       recordError(e, "intelligence:" + asset.symbol);
