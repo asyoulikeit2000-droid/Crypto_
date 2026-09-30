@@ -27,7 +27,7 @@ function filteredMarket(){
 
 function render(){
   const h=D.health||{},live=!!h.lastTrade&&Date.now()-Date.parse(h.lastTrade)<2e4;
-  const signalReady=!!h.safety?.signalReady,val=h.validation||{},cal=h.calibration||{},test=val.test||{};
+  const signalReady=!!h.safety?.signalReady,val=h.validation||{},cal=h.calibration||{},test=val.test||{},hz=h.horizonResearch||{};
   $("#hero").textContent=live?"LIVE":"STALE";
   $("#heroDot").style.background=live?"var(--green)":"var(--amber)";
   $("#dot").style.background=live?"var(--green)":"var(--amber)";
@@ -40,6 +40,13 @@ function render(){
   $("#books").textContent=(h.counts?.books||0).toLocaleString();
   $("#outcomesMetric").textContent=(cal.sampleCount||0).toLocaleString();
   $("#errors").textContent=(h.errors||[]).join("\n")||"None";
+  const h1=hz.H1||{},h4=hz.H4||{},d1=hz.D1||{};
+  $("#h1State").textContent=A(h1.state||"VALIDATING");
+  $("#h1Copy").textContent=`H1 evidence outcomes: ${A(h1.outcomes)} · actionable only after all model gates pass.`;
+  $("#h4State").textContent=A(h4.state||"DATA_WARMING").replaceAll("_"," ");
+  $("#h4Copy").textContent=`${A(h4.readyAssets)} assets data-ready · ${A(h4.candidates)} shadow candidates · ${A(h4.outcomes)} completed outcomes.`;
+  $("#d1State").textContent=A(d1.state||"DATA_WARMING").replaceAll("_"," ");
+  $("#d1Copy").textContent=`${A(d1.readyAssets)} assets have full-day coverage. D1 research stays locked until enough history exists.`;
 
   const checks=[
     [cal.status==="ACTIVE","Calibration","ACTIVE required"],
