@@ -142,7 +142,6 @@ async function relayJson(mode, symbols = []) {
   const response = await fetch(u, {
     headers: {
       apikey: RELAY_KEY,
-      Authorization: "Bearer " + RELAY_KEY,
       "x-region": "ap-southeast-1"
     }
   });
