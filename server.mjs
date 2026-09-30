@@ -1248,6 +1248,9 @@ async function dashboardPayload() {
       counts: state.counts,
       killSwitch: state.killSwitch,
       calibration: state.calibration,
+      validation: state.validation,
+      model: { id: MODEL_ID, featureVersion: FEATURE_VERSION },
+      safety: { paperOnly: true, executionEnabled: false },
       errors
     },
     market: publicMarket(),
@@ -1299,6 +1302,9 @@ async function healthPayload() {
     lastDeriv: state.lastDeriv,
     lastUniverseRefresh: state.lastUniverseRefresh,
     lastPipelineRun: state.lastPipelineRun,
+    calibration: state.calibration,
+    validation: state.validation,
+    model: { id: MODEL_ID, featureVersion: FEATURE_VERSION },
     errors: state.errors.slice(-10)
   };
 }
