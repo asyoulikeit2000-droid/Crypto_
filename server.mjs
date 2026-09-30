@@ -53,6 +53,7 @@ const state = {
   batchCursor: 0,
   lastUniverseRefresh: null,
   lastPipelineRun: null,
+  lastMarketSuccessAt: null,
   lastQualityWrite: 0,
   lastSignalAt: new Map(),
   recentSignals: [],
@@ -1155,6 +1156,7 @@ async function pollMarketData() {
 
     await writeProviderStatus("OK", null, "market", Date.now() - started);
     state.lastPipelineRun = iso();
+    state.lastMarketSuccessAt = iso();
     await runIntelligencePipeline(batch);
   } catch (e) {
     await writeProviderStatus("DEGRADED", String(e?.message || e), "market", Date.now() - started);
@@ -1280,21 +1282,35 @@ async function dashboardPayload() {
   };
 }
 
+function healthReadiness() {
+  const now = Date.now();
+  const live = Boolean(state.lastTrade && now - Date.parse(state.lastTrade) < 20000);
+  const bookLive = Boolean(state.lastBook && now - Date.parse(state.lastBook) < 20000);
+  const universeReady = state.assets.length >= 5 && Boolean(state.lastUniverseRefresh);
+  const ready = state.ready && universeReady && live && bookLive && !state.killSwitch;
+  return { ready, live, bookLive, universeReady };
+}
+
 async function healthPayload() {
-  const live = Boolean(state.lastTrade && Date.now() - Date.parse(state.lastTrade) < 20000);
-  const bookLive = Boolean(state.lastBook && Date.now() - Date.parse(state.lastBook) < 20000);
+  const readiness = healthReadiness();
   return {
-    ok: state.ready,
-    status: state.ready ? (live ? "LIVE" : "STALE") : "STARTING",
-    ready: state.ready,
+    ok: readiness.ready,
+    status: readiness.ready ? "LIVE" : (state.bootStage === "failed" ? "FAILED" : "STARTING"),
+    ready: readiness.ready,
+    readiness: {
+      universe: readiness.universeReady,
+      tradeStream: readiness.live,
+      orderbookStream: readiness.bookLive
+    },
     bootStage: state.bootStage,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     source: "BYBIT_PUBLIC_MARKET_DATA",
     paperOnly: true,
     executionEnabled: false,
     killSwitch: state.killSwitch,
-    liveTradeStream: live,
-    liveOrderbookStream: bookLive,
+    liveTradeStream: readiness.live,
+    liveOrderbookStream: readiness.bookLive,
+    lastMarketSuccessAt: state.lastMarketSuccessAt,
     assets: state.assets.length,
     counts: state.counts,
     lastTrade: state.lastTrade,
@@ -1336,7 +1352,8 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", "http://" + (req.headers.host || "localhost"));
     if (req.method === "GET" && url.pathname === "/api/health") {
-      return jsonReply(res, 200, await healthPayload());
+      const payload = await healthPayload();
+      return jsonReply(res, payload.ok ? 200 : 503, payload);
     }
     if (req.method === "GET" && url.pathname === "/api/dashboard") {
       return jsonReply(res, 200, await dashboardPayload());
@@ -1381,11 +1398,18 @@ async function boot() {
   await refreshUniverse();
 
   state.bootStage = "live_market";
+  await pollMarketData();
+  const readiness = healthReadiness();
+  if (!readiness.universeReady || !readiness.live || !readiness.bookLive) {
+    throw new Error("Live market readiness gate failed: universe=" + readiness.universeReady + ", trade=" + readiness.live + ", orderbook=" + readiness.bookLive);
+  }
   state.ready = true;
   log("engine_ready", {
     assets: state.assets.length,
     paperOnly: true,
-    runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown"
+    runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
+    liveTradeStream: readiness.live,
+    liveOrderbookStream: readiness.bookLive
   });
   await writeSystemEvent("ENGINE_READY", "info", "runtime", "Crypto Intelligence Engine ready", {
     assets: state.assets.length,
@@ -1401,7 +1425,6 @@ async function boot() {
   setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
   setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), 6 * 60 * 60 * 1000);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
-  await pollMarketData();
 }
 
 server.listen(PORT, HOST, () => {
