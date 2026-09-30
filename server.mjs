@@ -57,6 +57,7 @@ const state = {
   recentPaperTrades: [],
   killSwitch: false,
   calibration: { trainedAt: null, sampleCount: 0, globalProbability: null, byDirection: {}, status: "UNTRAINED" },
+  validation: { status: "NOT_RUN" },
   lastTrainingAt: 0
 };
 
@@ -324,7 +325,7 @@ async function trainCalibration(force = false) {
 
     await sb("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
       validation_metrics: {
-        calibration: state.calibration,
+        calibration: state.calibration,\n      validation: state.validation,
         note: "Outcome calibration from horizon-valid paper outcomes; calibration is activated only when minimum sample and positive-edge criteria are met."
       },
       calibration_method: "bayesian_probability_binning",
@@ -339,6 +340,62 @@ async function trainCalibration(force = false) {
   } catch (e) {
     recordError(e, "calibration_train");
     return state.calibration;
+  }
+}
+
+async function runWalkForwardValidation() {
+  try {
+    const rows = await sb("signal_outcomes", "GET", {
+      select: "signal_id,evaluated_at,outcome,pnl_after_cost,holding_seconds,evaluation_version",
+      order: "evaluated_at.asc",
+      limit: "5000"
+    });
+    const usable = rows.filter(x =>
+      (x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS))
+    );
+    if (usable.length < 20) {
+      state.validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: usable.length };
+      return state.validation;
+    }
+    const split = Math.max(10, Math.floor(usable.length * 0.70));
+    const train = usable.slice(0, split);
+    const test = usable.slice(split);
+    const metrics = part => {
+      const wins = part.filter(x => ["TARGET_1","TARGET_2","TARGET_3"].includes(x.outcome)).length;
+      const pnls = part.map(x => finite(x.pnl_after_cost));
+      const avg = pnls.length ? pnls.reduce((a,b)=>a+b,0)/pnls.length : 0;
+      let equity = 0, peak = 0, maxDrawdown = 0;
+      for (const p of pnls) {
+        equity += p;
+        peak = Math.max(peak, equity);
+        maxDrawdown = Math.max(maxDrawdown, peak - equity);
+      }
+      return { n: part.length, wins, winRate: part.length ? wins/part.length : 0, avgPnl: avg, totalPnl: pnls.reduce((a,b)=>a+b,0), maxDrawdown };
+    };
+    state.validation = {
+      status: "COMPLETE",
+      evaluatedAt: iso(),
+      sampleCount: usable.length,
+      split: { train: train.length, test: test.length, method: "chronological_70_30" },
+      train: metrics(train),
+      test: metrics(test)
+    };
+    const run = await sb("backtest_runs", "POST", {}, {
+      started_at: iso(),
+      finished_at: iso(),
+      universe_methodology: "recorded_signal_set",
+      target_definition: "H1 terminal outcome",
+      model_id: MODEL_ID,
+      config: { type: "walk_forward_validation", train_fraction: 0.70, max_horizon_seconds: MAX_HORIZON_SECONDS },
+      metrics: state.validation,
+      status: "COMPLETE"
+    }, { Prefer: "return=representation" });
+    state.validation.runId = run?.[0]?.run_id || null;
+    return state.validation;
+  } catch (e) {
+    recordError(e, "walk_forward_validation");
+    state.validation = { status: "FAILED", error: String(e?.message || e) };
+    return state.validation;
   }
 }
 
@@ -1261,6 +1318,7 @@ async function boot() {
   await ensureFeatureRegistry();
   await ensureModel();
   await trainCalibration(true);
+  await runWalkForwardValidation();
 
   state.bootStage = "universe";
   await refreshUniverse();
@@ -1283,7 +1341,7 @@ async function boot() {
   });
 
   setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);
-  setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
+  setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);\n  setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), 6 * 60 * 60 * 1000);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
   await pollMarketData();
 }
