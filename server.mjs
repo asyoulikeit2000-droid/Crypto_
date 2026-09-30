@@ -325,7 +325,8 @@ async function trainCalibration(force = false) {
 
     await sb("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
       validation_metrics: {
-        calibration: state.calibration,\n      validation: state.validation,
+        calibration: state.calibration,
+      validation: state.validation,
         note: "Outcome calibration from horizon-valid paper outcomes; calibration is activated only when minimum sample and positive-edge criteria are met."
       },
       calibration_method: "bayesian_probability_binning",
@@ -1341,7 +1342,8 @@ async function boot() {
   });
 
   setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);
-  setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);\n  setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), 6 * 60 * 60 * 1000);
+  setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
+  setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), 6 * 60 * 60 * 1000);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
   await pollMarketData();
 }
