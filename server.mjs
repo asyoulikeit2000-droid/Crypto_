@@ -428,6 +428,13 @@ async function runWalkForwardValidation() {
       status: "COMPLETE"
     }, { Prefer: "return=representation" });
     state.validation.runId = run?.[0]?.run_id || null;
+    await sb("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
+      validation_metrics: {
+        calibration: state.calibration,
+        validation: state.validation,
+        note: "Calibration measures T1 hit probability for this model only; walk-forward validation measures model-specific paper PnL."
+      }
+    });
     return state.validation;
   } catch (e) {
     recordError(e, "walk_forward_validation");
@@ -785,35 +792,37 @@ async function maybeWriteH4Shadow(asset, bars) {
 async function refreshHorizonResearch() {
   try {
     if (!state.assets.length) return;
-    const cutoff = iso(Date.now() - 26 * 60 * 60 * 1000);
-    const rows = await sb("ohlcv", "GET", {
-      select: "asset_id,bucket_start,open,high,low,close,volume",
-      timeframe: "eq.1m",
-      bucket_start: "gte." + cutoff,
-      order: "bucket_start.asc",
-      limit: "50000"
-    });
-    const current = new Set(state.assets.map(a => a.id));
-    const groups = new Map();
-    for (const row of rows) {
-      if (!current.has(row.asset_id)) continue;
-      if (!groups.has(row.asset_id)) groups.set(row.asset_id, []);
-      groups.get(row.asset_id).push(row);
-    }
-
     let h4Ready = 0, d1Ready = 0;
+
+    const histories = await Promise.all(state.assets.map(async asset => {
+      const bars = await sb("ohlcv", "GET", {
+        select: "asset_id,bucket_start,open,high,low,close,volume",
+        asset_id: "eq." + asset.id,
+        timeframe: "eq.1m",
+        bucket_start: "gte." + iso(Date.now() - 6 * 60 * 60 * 1000),
+        order: "bucket_start.asc",
+        limit: "500"
+      });
+      const d1Anchor = await sb("ohlcv", "GET", {
+        select: "bucket_start,close",
+        asset_id: "eq." + asset.id,
+        timeframe: "eq.1m",
+        bucket_start: "lte." + iso(Date.now() - 22 * 60 * 60 * 1000),
+        order: "bucket_start.desc",
+        limit: "1"
+      });
+      return { asset, bars, hasD1Anchor: Boolean(d1Anchor?.length) };
+    }));
+
     const now = Date.now();
-    for (const asset of state.assets) {
-      const bars = groups.get(asset.id) || [];
+    for (const { asset, bars, hasD1Anchor } of histories) {
       const bars4h = bars.filter(x => Date.parse(x.bucket_start) >= now - 4 * 60 * 60 * 1000);
-      const bars24h = bars.filter(x => Date.parse(x.bucket_start) >= now - 24 * 60 * 60 * 1000);
       const covers4h = bars.length && Date.parse(bars[0].bucket_start) <= now - 3.5 * 60 * 60 * 1000;
-      const covers24h = bars.length && Date.parse(bars[0].bucket_start) <= now - 22 * 60 * 60 * 1000;
       if (bars4h.length >= 180 && covers4h) {
         h4Ready++;
         await maybeWriteH4Shadow(asset, bars);
       }
-      if (bars24h.length >= 1000 && covers24h) d1Ready++;
+      if (hasD1Anchor) d1Ready++;
     }
 
     const h4Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + H4_MODEL_ID, limit: "5000" });
@@ -831,7 +840,7 @@ async function refreshHorizonResearch() {
     };
     state.horizonResearch.D1 = {
       modelId: D1_MODEL_ID,
-      state: d1Ready >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING",
+      state: d1Ready >= 5 ? "DATA_READY_RESEARCH_LOCKED" : "DATA_WARMING",
       readyAssets: d1Ready,
       candidates: 0,
       outcomes: 0
@@ -843,7 +852,7 @@ async function refreshHorizonResearch() {
       status: state.horizonResearch.H4.state
     });
     await sb("model_versions", "PATCH", { model_id: "eq." + D1_MODEL_ID }, {
-      training_window: { type: "data_warming", ready_assets: d1Ready, required_minutes: 1440 },
+      training_window: { type: "data_warming", ready_assets: d1Ready, required_history_hours: 24 },
       validation_metrics: { coverage_ready_assets: d1Ready },
       status: state.horizonResearch.D1.state
     });
