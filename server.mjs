@@ -911,7 +911,8 @@ async function managePaperTrades() {
 
       const qty = finite(trade.quantity);
       const gross = side === "LONG" ? (exitPrice - entry) * qty : (entry - exitPrice) * qty;
-      const exitNotional = Math.abs(exitPrice * qty);\n      const entryNotional = Math.abs(entry * qty);\n      const costs = finite(trade.fees) + finite(trade.slippage) + (exitNotional * PAPER_FEE_RATE) + (exitNotional * PAPER_SLIPPAGE_RATE) + finite(trade.funding_cost);
+      const exitNotional = Math.abs(exitPrice * qty);
+      const costs = finite(trade.fees) + finite(trade.slippage) + (exitNotional * PAPER_FEE_RATE) + (exitNotional * PAPER_SLIPPAGE_RATE) + finite(trade.funding_cost);
       const net = gross - costs;
 
       await sb("paper_trades", "PATCH", {
