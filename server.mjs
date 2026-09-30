@@ -243,48 +243,97 @@ async function trainCalibration(force = false) {
       select: "signal_id,outcome,evaluation_version,holding_seconds",
       limit: "5000"
     });
-    const usable = rows.filter(x => x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS));
+    const usable = rows.filter(x =>
+      x.evaluation_version === "paper_v2" ||
+      (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS)
+    );
     const ids = usable.map(x => x.signal_id);
     if (!ids.length) {
-      state.calibration = { ...state.calibration, trainedAt: iso(), sampleCount: 0, status: "WAITING_FOR_V2_OUTCOMES" };
+      state.calibration = { ...state.calibration, trainedAt: iso(), sampleCount: 0, status: "WAITING_FOR_OUTCOMES" };
       return state.calibration;
     }
+
     const signals = await sb("signals", "GET", {
-      select: "signal_id,signal,p_t1",
+      select: "signal_id,signal,p_t1,expected_value",
       signal_id: "in.(" + ids.join(",") + ")",
       limit: "5000"
     });
     const byId = new Map(signals.map(x => [x.signal_id, x]));
-    let wins = 0;
+    const buckets = Array.from({ length: 8 }, (_, i) => ({
+      lower: 0.50 + i * 0.05, upper: 0.55 + i * 0.05, n: 0, wins: 0
+    }));
+    let wins = 0, brier = 0, used = 0;
     const dir = { LONG: { n: 0, w: 0 }, SHORT: { n: 0, w: 0 } };
+
     for (const o of usable) {
       const s = byId.get(o.signal_id);
       if (!s) continue;
-      const win = o.outcome === "TARGET_3" || o.outcome === "TARGET_1" || o.outcome === "TARGET_2";
-      wins += win ? 1 : 0;
+      const p = clamp(finite(s.p_t1, 0.5), 0, 1);
+      const win = ["TARGET_1","TARGET_2","TARGET_3"].includes(o.outcome);
+      const y = win ? 1 : 0;
+      wins += y; used++;
+      brier += (p - y) ** 2;
       const d = String(s.signal || "");
-      if (dir[d]) { dir[d].n++; dir[d].w += win ? 1 : 0; }
+      if (dir[d]) { dir[d].n++; dir[d].w += y; }
+      const idx = Math.min(7, Math.max(0, Math.floor((p - 0.50) / 0.05)));
+      buckets[idx].n++;
+      buckets[idx].wins += y;
     }
-    const n = usable.length;
+
     const priorMean = 0.20, priorStrength = 12;
-    const smooth = (w, count) => (w + priorMean * priorStrength) / (count + priorStrength);
+    const smooth = (w, n) => (w + priorMean * priorStrength) / (n + priorStrength);
+    const bins = buckets.map(b => ({
+      lower: b.lower,
+      upper: b.upper,
+      n: b.n,
+      wins: b.wins,
+      observed_rate: b.n ? b.wins / b.n : null,
+      calibrated_rate: b.n ? smooth(b.wins, b.n) : null
+    }));
+    const global = used ? smooth(wins, used) : null;
+    const calibrationActive = used >= 50 && global >= 0.50;
     state.calibration = {
       trainedAt: iso(),
-      sampleCount: n,
-      globalProbability: smooth(wins, n),
+      sampleCount: used,
+      globalProbability: global,
       byDirection: {
-        LONG: smooth(dir.LONG.w, dir.LONG.n),
-        SHORT: smooth(dir.SHORT.w, dir.SHORT.n)
+        LONG: dir.LONG.n ? smooth(dir.LONG.w, dir.LONG.n) : global,
+        SHORT: dir.SHORT.n ? smooth(dir.SHORT.w, dir.SHORT.n) : global
       },
-      rawWinRate: n ? wins / n : null,
-      status: n >= 50 ? "ACTIVE" : "WARMING"
+      rawWinRate: used ? wins / used : null,
+      brierScore: used ? brier / used : null,
+      bins,
+      status: calibrationActive ? "ACTIVE" : (used >= 50 ? "EDGE_NOT_CONFIRMED" : "WARMING")
     };
+
+    await sb("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
+      calibration_id: MODEL_ID + ":" + Date.now(),
+      model_id: MODEL_ID,
+      method: "bayesian_probability_binning",
+      trained_at: iso(),
+      metrics: {
+        sample_count: used,
+        raw_win_rate: state.calibration.rawWinRate,
+        brier_score: state.calibration.brierScore,
+        global_probability: global,
+        status: state.calibration.status
+      },
+      bins,
+      active: calibrationActive
+    }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+
     await sb("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
       validation_metrics: {
         calibration: state.calibration,
-        note: "Conservative Bayesian calibration from terminal paper_v2 outcomes; not a claim of predictive certainty."
+        note: "Outcome calibration from horizon-valid paper outcomes; calibration is activated only when minimum sample and positive-edge criteria are met."
       },
-      training_window: { type: "online_outcome_calibration", sample_count: n, max_horizon_seconds: MAX_HORIZON_SECONDS }
+      calibration_method: "bayesian_probability_binning",
+      training_window: {
+        type: "online_outcome_calibration",
+        sample_count: used,
+        max_horizon_seconds: MAX_HORIZON_SECONDS
+      },
+      status: calibrationActive ? "PRODUCTION_RULES_CALIBRATED" : "LEARNING_HOLD"
     });
     return state.calibration;
   } catch (e) {
@@ -498,7 +547,7 @@ function computeSignal(asset, feat) {
   const strength = clamp(Math.abs(alignment), 0, 1);
   const rawProbabilityT1 = clamp(0.50 + strength * 0.32 + Math.max(0, finite(feat.cvd_10m)) * 0.06, 0.51, 0.88);
   const calibrated = state.calibration.status === "ACTIVE" ? (state.calibration.byDirection[direction] ?? state.calibration.globalProbability) : null;
-  const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);
+  const probabilityT1 = calibrated == null ? rawProbabilityT1 : clamp(calibrated, 0.05, 0.60);\n  if (state.calibration.status === "EDGE_NOT_CONFIRMED") return { action: "NO TRADE", reason: "learning_hold_no_confirmed_edge" };
   const expectedReturn = probabilityT1 * riskPct - (1 - probabilityT1) * riskPct;
   const riskState = spread < 6 && strength >= 0.45 ? "NORMAL" : "CAUTION";
   const reasons = [
@@ -1089,7 +1138,7 @@ async function dashboardPayload() {
       lastPipelineRun: state.lastPipelineRun,
       assets: state.assets.length,
       counts: state.counts,
-      killSwitch: state.killSwitch,
+      killSwitch: state.killSwitch,\n      calibration: state.calibration,
       errors
     },
     market: publicMarket(),
