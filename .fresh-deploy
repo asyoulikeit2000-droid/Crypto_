@@ -1,2 +1,4 @@
 Fresh Railway deployment trigger. Deploy the current main commit with the standard Railway build configuration.
 Triggered 2026-09-30T05:55+04:00 to synchronize production with current main.
+
+Latest source sync marker: 11b5671c4b98c0302adbbaa8dd6596076fa812f4
