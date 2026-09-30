@@ -19,7 +19,7 @@ const H4_MODEL_ID = "rules_h4_swing_shadow_v1";
 const D1_MODEL_ID = "rules_d1_position_shadow_v1";
 const H4_HORIZON_SECONDS = 4 * 60 * 60;
 const D1_HORIZON_SECONDS = 24 * 60 * 60;
-const TRAIN_INTERVAL_MS = 10 * 60 * 1000;
+const TRAIN_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_HORIZON_SECONDS = 3600;
 const PAPER_FEE_RATE = Number(process.env.PAPER_FEE_RATE || 0.00055);
 const PAPER_SLIPPAGE_RATE = Number(process.env.PAPER_SLIPPAGE_RATE || 0.00015);
@@ -39,6 +39,8 @@ const FEATURE_DEFS = [
 ];
 const POLL_MS = 5000;
 const UNIVERSE_REFRESH_MS = 10 * 60 * 1000;
+const HORIZON_RESEARCH_INTERVAL_MS = 5 * 60 * 1000;
+const VALIDATION_INTERVAL_MS = 30 * 60 * 1000;
 const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
 const QUALITY_INTERVAL_MS = 60 * 1000;
 
@@ -1728,9 +1730,9 @@ async function boot() {
   });
 
   setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);
-  setInterval(() => refreshHorizonResearch().catch(e => recordError(e, "horizon_interval")), UNIVERSE_REFRESH_MS);
+  setInterval(() => refreshHorizonResearch().catch(e => recordError(e, "horizon_interval")), HORIZON_RESEARCH_INTERVAL_MS);
   setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
-  setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), 6 * 60 * 60 * 1000);
+  setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), VALIDATION_INTERVAL_MS);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
 }
 
