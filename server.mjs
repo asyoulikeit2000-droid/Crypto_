@@ -250,7 +250,7 @@ async function ensureModel() {
     training_window: { type: "rule_engine", note: "No opaque ML prediction is claimed." },
     hyperparameters: {
       min_alignment: 0.25,
-      min_probability_t1: 0.60,
+      min_probability_t1: 0.70,
       max_spread_bps: 12,
       max_stale_ms: 20000
     },
