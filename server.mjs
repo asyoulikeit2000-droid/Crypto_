@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rankEligibleUniverse } from "./universe-engine.mjs";
 import { createIntelligenceEngine } from "./intelligence-engine.mjs";
-import { evaluateSignalReadiness } from "./signal-gates.mjs";
+import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-gates.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -412,13 +412,32 @@ async function runWalkForwardValidation() {
       }
       return { n: part.length, wins, winRate: part.length ? wins/part.length : 0, avgPnl: avg, totalPnl: pnls.reduce((a,b)=>a+b,0), maxDrawdown };
     };
+    const foldCount = 5;
+    const folds = [];
+    for (let i = 0; i < foldCount; i++) {
+      const from = Math.floor(i * usable.length / foldCount);
+      const to = Math.floor((i + 1) * usable.length / foldCount);
+      folds.push({ index: i + 1, ...metrics(usable.slice(from, to)) });
+    }
+    const foldAvgs = folds.map(x => x.avgPnl).sort((a,b)=>a-b);
+    const medianAvgPnl = foldAvgs[Math.floor(foldAvgs.length / 2)] || 0;
+    const recentFolds = folds.slice(-3);
+    const recentTotalPnl = recentFolds.reduce((sum,x)=>sum + x.totalPnl, 0);
+    const robustness = {
+      foldCount,
+      positiveFolds: folds.filter(x => x.avgPnl > 0 && x.totalPnl > 0).length,
+      medianAvgPnl,
+      recentTotalPnl,
+      folds
+    };
     state.validation = {
       status: "COMPLETE",
       evaluatedAt: iso(),
       sampleCount: usable.length,
       split: { train: train.length, test: test.length, method: "chronological_70_30" },
       train: metrics(train),
-      test: metrics(test)
+      test: metrics(test),
+      robustness
     };
     const run = await sb("backtest_runs", "POST", {}, {
       started_at: iso(),
@@ -1101,7 +1120,7 @@ async function refreshHorizonResearch() {
 
     state.horizonResearch.H1 = {
       modelId: MODEL_ID,
-      state: modelSignalReady() ? "VALIDATED" : "VALIDATING",
+      state: productionSignalReady() ? "ACTIONABLE" : (modelSignalReady() ? "STATISTICALLY_READY_RESEARCH_LOCKED" : "VALIDATING"),
       outcomes: state.calibration.sampleCount || 0,
       gate: modelSignalGate()
     };
@@ -1172,6 +1191,24 @@ function modelSignalGate() {
 
 function modelSignalReady() {
   return modelSignalGate().ready;
+}
+
+function productionSignalGate() {
+  const statistical = modelSignalGate();
+  const robustness = evaluateProductionRobustness(state.validation);
+  return {
+    ready: statistical.ready && robustness.ready,
+    statistical,
+    robustness,
+    failed: [
+      ...statistical.failed,
+      ...robustness.failed.map(x => "robustness:" + x)
+    ]
+  };
+}
+
+function productionSignalReady() {
+  return productionSignalGate().ready;
 }
 
 function computeSignal(asset, feat, shadowMode = false) {
@@ -1292,7 +1329,7 @@ async function persistRegime(asset, feat, observedAt) {
 }
 
 async function maybeWriteSignal(asset, feat, regime) {
-  const shadowMode = !modelSignalReady();
+  const shadowMode = !productionSignalReady();
   const decision = computeSignal(asset, feat, shadowMode);
   if (decision.action === "NO TRADE" || state.killSwitch) return null;
 
@@ -1853,7 +1890,7 @@ async function dashboardPayload() {
         secondary: "SCALP_CONDITIONAL",
         note: "Current validated model horizon is H1; multi-hour and multi-day swing horizons require separate validation."
       },
-      safety: { paperOnly: true, executionEnabled: false, signalReady: modelSignalReady(), signalGate: modelSignalGate() },
+      safety: { paperOnly: true, executionEnabled: false, signalReady: productionSignalReady(), statisticalSignalReady: modelSignalReady(), signalGate: productionSignalGate() },
       errors
     },
     market: publicMarket(),
@@ -1908,9 +1945,10 @@ async function healthPayload() {
     source: "BYBIT_PUBLIC_MARKET_DATA",
     paperOnly: true,
     executionEnabled: false,
-    signalReady: modelSignalReady(),
-    signalGate: modelSignalGate(),
-    signalGateReason: modelSignalReady() ? null : modelSignalGate().failed.join(", "),
+    signalReady: productionSignalReady(),
+    statisticalSignalReady: modelSignalReady(),
+    signalGate: productionSignalGate(),
+    signalGateReason: productionSignalReady() ? null : productionSignalGate().failed.join(", "),
     killSwitch: state.killSwitch,
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateSignalReadiness } from "../signal-gates.mjs";
+import { evaluateSignalReadiness, evaluateProductionRobustness } from "../signal-gates.mjs";
 import { isEligibleInstrument, rankEligibleUniverse } from "../universe-engine.mjs";
 import { createIntelligenceEngine } from "../intelligence-engine.mjs";
 
@@ -45,4 +45,12 @@ test("intelligence blocks stale/thin data", () => {
   const f=e.features("x");
   assert.equal(f.action,"NO TRADE");
   assert.equal(f.microstructure_quality,false);
+});
+
+test("production robustness requires broad time consistency", () => {
+  const pass = evaluateProductionRobustness({ robustness: { foldCount: 5, positiveFolds: 3, medianAvgPnl: 0.01, recentTotalPnl: 0.2 } });
+  assert.equal(pass.ready, true);
+  const fail = evaluateProductionRobustness({ robustness: { foldCount: 5, positiveFolds: 1, medianAvgPnl: -0.01, recentTotalPnl: -0.2 } });
+  assert.equal(fail.ready, false);
+  assert.ok(fail.failed.includes("majorityPositiveFolds"));
 });

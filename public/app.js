@@ -27,7 +27,7 @@ function filteredMarket(){
 
 function render(){
   const h=D.health||{},live=!!h.lastTrade&&Date.now()-Date.parse(h.lastTrade)<2e4;
-  const signalReady=!!h.safety?.signalReady,val=h.validation||{},cal=h.calibration||{},test=val.test||{},hz=h.horizonResearch||{};
+  const signalReady=!!h.safety?.signalReady,statReady=!!h.safety?.statisticalSignalReady,val=h.validation||{},cal=h.calibration||{},test=val.test||{},rob=val.robustness||{},hz=h.horizonResearch||{};
   $("#hero").textContent=live?"LIVE":"STALE";
   $("#heroDot").style.background=live?"var(--green)":"var(--amber)";
   $("#dot").style.background=live?"var(--green)":"var(--amber)";
@@ -56,9 +56,9 @@ function render(){
     [Number(test.totalPnl||0)>0,"Total PnL",`${num(test.totalPnl,4)} must be > 0`]
   ];
   const passed=checks.filter(x=>x[0]).length;
-  $("#modelGate").textContent=signalReady?"VALIDATED":"SHADOW / NOT VALIDATED";
+  $("#modelGate").textContent=signalReady?"PRODUCTION ACTIONABLE":(statReady?"STATISTICALLY READY · ROBUSTNESS LOCKED":"SHADOW / NOT VALIDATED");
   $("#modelGate").className=signalReady?"up":"down";
-  $("#modelCopy").textContent=signalReady?"All gates passed. Actionable signal publishing is enabled.":"Engine is live; actionable entries remain blocked until all evidence gates pass.";
+  $("#modelCopy").textContent=signalReady?"Statistical and robustness gates passed. Actionable publishing is enabled.":(statReady?"Base validation passed, but multi-period robustness is not yet sufficient. Entries remain research-only.":"Engine is live; actionable entries remain blocked until all evidence gates pass.");
   $("#gateGrid").innerHTML=checks.map(x=>gate(...x)).join("");
   $("#gateScore").textContent=`${passed} / ${checks.length} gates`;
   $("#gateBar").style.width=`${Math.round(passed/checks.length*100)}%`;
@@ -79,7 +79,7 @@ function render(){
   const actionable=sig.filter(s=>s.model_id==="rules_v2_adaptive"&&String(s.risk_state||"").toUpperCase()!=="SHADOW");
   $("#cards").innerHTML=signalReady&&actionable.length?actionable.slice(0,6).map(s=>`<div class="card signal-card"><div class="card-top"><b>${A(K(s,"symbol","asset_id"))}</b>${badge(K(s,"action","signal","side"))}</div><div class="price">${K(s,"entry_price","entry")!=null?"$"+num(K(s,"entry_price","entry")):"—"}</div><div class="muted">${K(s,"probability","p_t1")!=null?num(Number(K(s,"probability","p_t1"))*100,2)+"% probability":"Probability pending"}</div><hr><div class="muted">${A(K(s,"reasons","reason")||"Validated evidence set.")}</div></div>`).join(""):`<div class="locked-state"><div class="lock-icon">◈</div><div><b>No actionable signal yet</b><p>${signalReady?"Waiting for the next qualified setup.":"Historical candidates are retained for shadow validation, but entries are blocked until all model gates pass."}</p></div></div>`;
 
-  $("#signalNotice").innerHTML=signalReady?`<b class="up">H1 model validated.</b> ${actionable.length} validated H1 record(s) shown as actionable; H4/D1 research remains shadow-only.`:'<b class="down">Shadow mode.</b> These are research records, not approved entries.';
+  $("#signalNotice").innerHTML=signalReady?`<b class="up">H1 production-actionable.</b> ${actionable.length} qualified H1 record(s) shown; H4/D1 remain shadow-only.`:(statReady?'<b class="down">H1 robustness locked.</b> Base validation passed, but time-slice robustness is insufficient; records remain research-only.':'<b class="down">Shadow mode.</b> These are research records, not approved entries.');
   $("#signalTable").innerHTML=tableSignals(sig);
   $("#marketTable").innerHTML=market.length?`<table><thead><tr><th>#</th><th>ASSET</th><th>PRICE</th><th>24H</th><th>VOLUME</th><th>SPREAD</th><th>FRESH</th></tr></thead><tbody>${market.map((a,i)=>`<tr><td>${i+1}</td><td><b>${A(a.symbol)}</b></td><td>$${num(a.price)}</td><td class="${Number(a.change24h)>=0?"up":"down"}">${pct(a.change24h)}</td><td>${num(a.volume24h,0)}</td><td>${num(a.spreadBps,2)} bps</td><td>${ago(a.updatedAt)}</td></tr>`).join("")}</tbody></table>`:"<div class=\"empty\">Universe unavailable.</div>";
 

@@ -21,3 +21,19 @@ export function evaluateSignalReadiness(calibration = {}, validation = {}) {
     }
   };
 }
+
+export function evaluateProductionRobustness(validation = {}) {
+  const r = validation?.robustness || {};
+  const positiveFolds = Number(r.positiveFolds || 0);
+  const foldCount = Number(r.foldCount || 0);
+  const medianAvgPnl = Number(r.medianAvgPnl || 0);
+  const recentTotalPnl = Number(r.recentTotalPnl || 0);
+  const checks = {
+    enoughFolds: foldCount >= 5,
+    majorityPositiveFolds: positiveFolds >= 3,
+    medianFoldPositive: medianAvgPnl > 0,
+    recentWindowPositive: recentTotalPnl > 0
+  };
+  const failed = Object.entries(checks).filter(([,ok])=>!ok).map(([k])=>k);
+  return { ready: failed.length === 0, checks, failed, metrics: { positiveFolds, foldCount, medianAvgPnl, recentTotalPnl } };
+}
