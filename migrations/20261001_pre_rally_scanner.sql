@@ -200,6 +200,21 @@ grant select, insert, delete on engine.scanner_watchlist_tokens to authenticated
 grant select, insert, update, delete on engine.scanner_alert_preferences to authenticated;
 grant select on engine.scanner_alert_history to authenticated;
 
+grant usage on schema engine to service_role;
+grant select, insert, update, delete on
+  engine.scanner_tokens,
+  engine.scanner_pairs,
+  engine.scanner_market_snapshots,
+  engine.scanner_enrichment_snapshots,
+  engine.scanner_evaluations,
+  engine.scanner_watchlists,
+  engine.scanner_watchlist_tokens,
+  engine.scanner_alert_preferences,
+  engine.scanner_alert_history,
+  engine.scanner_jobs
+to service_role;
+grant usage, select on all sequences in schema engine to service_role;
+
 drop policy if exists scanner_watchlists_owner_select on engine.scanner_watchlists;
 create policy scanner_watchlists_owner_select on engine.scanner_watchlists for select to authenticated
 using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
