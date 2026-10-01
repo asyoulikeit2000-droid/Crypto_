@@ -61,6 +61,8 @@ const state = {
   lastUniverseRefresh: null,
   lastPipelineRun: null,
   lastMarketSuccessAt: null,
+  lastSupabaseSuccessAt: null,
+  lastSupabaseFailureAt: null,
   lastQualityWrite: 0,
   lastSignalAt: new Map(),
   recentSignals: [],
@@ -122,14 +124,20 @@ async function sb(table, method = "GET", params = {}, body, extraHeaders = {}) {
     headers["Content-Profile"] = SCHEMA;
     headers.Prefer = extraHeaders.Prefer || "return=minimal";
   }
-  const response = await fetch(u, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error("Supabase " + response.status + " " + text.slice(0, 800));
-  return text ? JSON.parse(text) : [];
+  try {
+    const response = await fetch(u, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error("Supabase " + response.status + " " + text.slice(0, 800));
+    state.lastSupabaseSuccessAt = iso();
+    return text ? JSON.parse(text) : [];
+  } catch (e) {
+    state.lastSupabaseFailureAt = iso();
+    throw e;
+  }
 }
 
 async function insertRows(table, rows, onConflict = null, mode = "ignore", representation = false) {
@@ -1925,8 +1933,15 @@ function healthReadiness() {
   const live = Boolean(state.lastTrade && now - Date.parse(state.lastTrade) < 20000);
   const bookLive = Boolean(state.lastBook && now - Date.parse(state.lastBook) < 20000);
   const universeReady = state.assets.length >= 5 && Boolean(state.lastUniverseRefresh);
-  const ready = state.ready && universeReady && live && bookLive && !state.killSwitch;
-  return { ready, live, bookLive, universeReady };
+  const supabaseSuccessMs = state.lastSupabaseSuccessAt ? Date.parse(state.lastSupabaseSuccessAt) : 0;
+  const supabaseFailureMs = state.lastSupabaseFailureAt ? Date.parse(state.lastSupabaseFailureAt) : 0;
+  const supabaseLive = Boolean(
+    supabaseSuccessMs &&
+    now - supabaseSuccessMs < 60000 &&
+    supabaseSuccessMs >= supabaseFailureMs
+  );
+  const ready = state.ready && universeReady && live && bookLive && supabaseLive && !state.killSwitch;
+  return { ready, live, bookLive, universeReady, supabaseLive };
 }
 
 async function healthPayload() {
@@ -1938,7 +1953,8 @@ async function healthPayload() {
     readiness: {
       universe: readiness.universeReady,
       tradeStream: readiness.live,
-      orderbookStream: readiness.bookLive
+      orderbookStream: readiness.bookLive,
+      supabase: readiness.supabaseLive
     },
     bootStage: state.bootStage,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
@@ -1953,6 +1969,8 @@ async function healthPayload() {
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
     lastMarketSuccessAt: state.lastMarketSuccessAt,
+    lastSupabaseSuccessAt: state.lastSupabaseSuccessAt,
+    lastSupabaseFailureAt: state.lastSupabaseFailureAt,
     assets: state.assets.length,
     counts: state.counts,
     lastTrade: state.lastTrade,
@@ -2049,8 +2067,13 @@ async function boot() {
   await pollMarketData();
   await refreshHorizonResearch();
   const readiness = healthReadiness();
-  if (!readiness.universeReady || !readiness.live || !readiness.bookLive) {
-    throw new Error("Live market readiness gate failed: universe=" + readiness.universeReady + ", trade=" + readiness.live + ", orderbook=" + readiness.bookLive);
+  if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.supabaseLive) {
+    throw new Error(
+      "Production readiness gate failed: universe=" + readiness.universeReady +
+      ", trade=" + readiness.live +
+      ", orderbook=" + readiness.bookLive +
+      ", supabase=" + readiness.supabaseLive
+    );
   }
   state.ready = true;
   log("engine_ready", {
