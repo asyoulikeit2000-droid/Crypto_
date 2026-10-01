@@ -15,14 +15,14 @@ const KEY = process.env.SUPABASE_SECRET_KEY || "";
 const SCHEMA = process.env.SUPABASE_DB_SCHEMA || "engine";
 const RELAY_URL = process.env.MARKET_RELAY_URL || (SB ? SB + "/functions/v1/market-data-relay" : "");
 const RELAY_KEY = process.env.MARKET_RELAY_KEY || "";
-const FEATURE_VERSION = "v2.0";
-const MODEL_ID = "rules_v2_adaptive";
-const H4_MODEL_ID = "rules_h4_swing_shadow_v1";
+const FEATURE_VERSION = "v2.1";
+const MODEL_ID = "rules_v3_selective";
+const H4_MODEL_ID = "rules_h4_swing_selective_v2";
 const D1_MODEL_ID = "rules_d1_position_shadow_v1";
 const MTF_MODEL_ID = "rules_mtf_swing_position_shadow_v1";
 const H4_HORIZON_SECONDS = 4 * 60 * 60;
 const D1_HORIZON_SECONDS = 24 * 60 * 60;
-const TRAIN_INTERVAL_MS = 5 * 60 * 1000;
+const TRAIN_INTERVAL_MS = 2 * 60 * 1000;
 const MAX_HORIZON_SECONDS = 3600;
 const PAPER_FEE_RATE = Number(process.env.PAPER_FEE_RATE || 0.00055);
 const PAPER_SLIPPAGE_RATE = Number(process.env.PAPER_SLIPPAGE_RATE || 0.00015);
@@ -42,8 +42,8 @@ const FEATURE_DEFS = [
 ];
 const POLL_MS = 5000;
 const UNIVERSE_REFRESH_MS = 10 * 60 * 1000;
-const HORIZON_RESEARCH_INTERVAL_MS = 5 * 60 * 1000;
-const VALIDATION_INTERVAL_MS = 30 * 60 * 1000;
+const HORIZON_RESEARCH_INTERVAL_MS = 2 * 60 * 1000;
+const VALIDATION_INTERVAL_MS = 10 * 60 * 1000;
 const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
 const QUALITY_INTERVAL_MS = 60 * 1000;
 
@@ -819,13 +819,13 @@ function h4ShadowDecision(asset, bars) {
   if (Math.sign(r1h) !== Math.sign(r4h) || Math.abs(r4h) < 0.004 || Math.abs(r1h) < 0.001) {
     return { action: "NO TRADE", reason: "h4_trend_alignment" };
   }
-  if (efficiency < 0.10) return { action: "NO TRADE", reason: "h4_low_trend_efficiency" };
+  if (efficiency < 0.15) return { action: "NO TRADE", reason: "h4_low_trend_efficiency" };
 
   const direction = r4h > 0 ? "LONG" : "SHORT";
   const sign = direction === "LONG" ? 1 : -1;
   const riskPct = clamp(Math.max(0.005, avgRange * 2.5), 0.005, 0.03);
   const rawP = clamp(0.52 + Math.min(0.14, Math.abs(r4h) * 5) + Math.min(0.05, Math.max(0, volumeRatio - 1) * 0.04) + efficiency * 0.08, 0.52, 0.82);
-  if (rawP < 0.60) return { action: "NO TRADE", reason: "h4_probability_gate" };
+  if (rawP < 0.70) return { action: "NO TRADE", reason: "h4_probability_gate" };
 
   return {
     action: direction,
@@ -1451,7 +1451,7 @@ function computeSignal(asset, feat, shadowMode = false) {
     spread < 6 ? "tight_spread" : "acceptable_spread"
   ];
 
-  if (probabilityT1 < 0.60 || expectedReturn <= 0) {
+  if (rawProbabilityT1 < 0.70 || probabilityT1 < 0.50 || expectedReturn <= 0) {
     return { action: "NO TRADE", reason: "expected_value_gate" };
   }
 
@@ -1834,7 +1834,7 @@ function applyTicker(asset, ticker) {
 
 async function pollMarketData() {
   if (!state.assets.length) return;
-  const batchSize = 10;
+  const batchSize = 15;
   const start = state.batchCursor % state.assets.length;
   const batch = Array.from({ length: Math.min(batchSize, state.assets.length) }, (_, i) =>
     state.assets[(start + i) % state.assets.length]
