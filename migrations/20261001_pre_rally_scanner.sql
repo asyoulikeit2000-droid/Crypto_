@@ -71,6 +71,7 @@ create table if not exists engine.scanner_market_snapshots (
   unique(token_id, pair_id, observed_at, provider_name)
 );
 create index if not exists scanner_market_recent_idx on engine.scanner_market_snapshots(token_id, observed_at desc);
+create index if not exists scanner_market_pair_idx on engine.scanner_market_snapshots(pair_id);
 
 create table if not exists engine.scanner_enrichment_snapshots (
   enrichment_id bigint generated always as identity primary key,
@@ -102,6 +103,8 @@ create table if not exists engine.scanner_enrichment_snapshots (
   ingestion_timestamp timestamptz not null default now()
 );
 
+create index if not exists scanner_enrichment_token_idx on engine.scanner_enrichment_snapshots(token_id);
+
 create table if not exists engine.scanner_evaluations (
   evaluation_id bigint generated always as identity primary key,
   token_id uuid not null references engine.scanner_tokens(token_id) on delete cascade,
@@ -124,6 +127,7 @@ create table if not exists engine.scanner_evaluations (
 );
 create index if not exists scanner_eval_rank_idx on engine.scanner_evaluations(evaluated_at desc, pre_rally_score desc);
 create index if not exists scanner_eval_token_idx on engine.scanner_evaluations(token_id, evaluated_at desc);
+create index if not exists scanner_evaluations_pair_idx on engine.scanner_evaluations(pair_id);
 
 create table if not exists engine.scanner_watchlists (
   watchlist_id uuid primary key default gen_random_uuid(),
@@ -138,6 +142,8 @@ create table if not exists engine.scanner_watchlist_tokens (
   added_at timestamptz not null default now(),
   primary key(watchlist_id, token_id)
 );
+create index if not exists scanner_watchlist_tokens_token_idx on engine.scanner_watchlist_tokens(token_id);
+
 create table if not exists engine.scanner_alert_preferences (
   preference_id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade unique,
@@ -165,6 +171,9 @@ create table if not exists engine.scanner_alert_history (
   delivery_status text not null default 'pending',
   unique(user_id, dedup_key)
 );
+
+create index if not exists scanner_alert_history_token_idx on engine.scanner_alert_history(token_id);
+create index if not exists scanner_alert_history_evaluation_idx on engine.scanner_alert_history(evaluation_id);
 
 create table if not exists engine.scanner_jobs (
   job_id uuid primary key default gen_random_uuid(),
