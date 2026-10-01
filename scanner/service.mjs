@@ -10,33 +10,61 @@ export function createPreRallyScanner({db,log=console.log}={}){
   const state={enabled,lastRunAt:null,lastSuccessAt:null,lastError:null,running:false,tokens:[],provider:"DEXSCREENER"};
   async function persist(row,score){
     if(!db)return;
-    const token=await db("scanner_tokens","POST",{on_conflict:"chain_id,contract_address"},{
-      chain_id:row.chainId,contract_address:row.tokenAddress,token_name:row.tokenName,token_symbol:row.tokenSymbol,
-      logo_url:row.imageUrl,first_seen_at:new Date().toISOString(),active:true,provider_metadata:{provider:row.provider,websites:row.websites,socials:row.socials}
-    },{Prefer:"resolution=merge-duplicates,return=representation"});
-    const tokenId=token?.[0]?.token_id;
+    const now=new Date().toISOString();
+    let token=await db("scanner_tokens","GET",{
+      chain_id:"eq."+row.chainId,contract_address:"eq."+row.tokenAddress,select:"token_id"
+    });
+    let tokenId=token?.[0]?.token_id||null;
+    if(!tokenId){
+      token=await db("scanner_tokens","POST",{on_conflict:"chain_id,contract_address"},{
+        chain_id:row.chainId,contract_address:row.tokenAddress,token_name:row.tokenName,token_symbol:row.tokenSymbol,
+        logo_url:row.imageUrl,first_seen_at:now,active:true,provider_metadata:{provider:row.provider,websites:row.websites,socials:row.socials}
+      },{Prefer:"resolution=ignore-duplicates,return=representation"});
+      tokenId=token?.[0]?.token_id||null;
+      if(!tokenId){
+        token=await db("scanner_tokens","GET",{
+          chain_id:"eq."+row.chainId,contract_address:"eq."+row.tokenAddress,select:"token_id"
+        });
+        tokenId=token?.[0]?.token_id||null;
+      }
+    }
     if(!tokenId)return;
-    const pair=await db("scanner_pairs","POST",{on_conflict:"chain_id,pair_address"},{
-      token_id:tokenId,chain_id:row.chainId,pair_address:row.pairAddress,dex_name:row.dexName,
-      base_token:{address:row.tokenAddress,name:row.tokenName,symbol:row.tokenSymbol},quote_token:row.quoteToken,
-      pair_created_at:row.pairCreatedAt,first_seen_at:new Date().toISOString(),active:true,primary_pair:true,provider_metadata:{provider:row.provider}
-    },{Prefer:"resolution=merge-duplicates,return=representation"});
-    const pairId=pair?.[0]?.pair_id||null;
+
+    let pair=await db("scanner_pairs","GET",{
+      chain_id:"eq."+row.chainId,pair_address:"eq."+row.pairAddress,select:"pair_id"
+    });
+    let pairId=pair?.[0]?.pair_id||null;
+    if(!pairId){
+      pair=await db("scanner_pairs","POST",{on_conflict:"chain_id,pair_address"},{
+        token_id:tokenId,chain_id:row.chainId,pair_address:row.pairAddress,dex_name:row.dexName,
+        base_token:{address:row.tokenAddress,name:row.tokenName,symbol:row.tokenSymbol},quote_token:row.quoteToken,
+        pair_created_at:row.pairCreatedAt,first_seen_at:now,active:true,primary_pair:true,provider_metadata:{provider:row.provider}
+      },{Prefer:"resolution=ignore-duplicates,return=representation"});
+      pairId=pair?.[0]?.pair_id||null;
+      if(!pairId){
+        pair=await db("scanner_pairs","GET",{
+          chain_id:"eq."+row.chainId,pair_address:"eq."+row.pairAddress,select:"pair_id"
+        });
+        pairId=pair?.[0]?.pair_id||null;
+      }
+    }
+
+    const freshness=row.sourceTimestamp?"FRESH":"UNKNOWN_SOURCE_TIME";
     await db("scanner_market_snapshots","POST",{},{
-      token_id:tokenId,pair_id:pairId,observed_at:new Date().toISOString(),price_usd:row.priceUsd,liquidity_usd:row.liquidityUsd,
+      token_id:tokenId,pair_id:pairId,observed_at:now,price_usd:row.priceUsd,liquidity_usd:row.liquidityUsd,
       market_cap:row.marketCap,fdv:row.fdv,volume_1h:row.volume1h,volume_6h:row.volume6h,volume_24h:row.volume24h,
       buys_1h:row.buys1h,sells_1h:row.sells1h,buys_24h:row.buys24h,sells_24h:row.sells24h,
       price_change_1h:row.priceChange1h,price_change_6h:row.priceChange6h,price_change_24h:row.priceChange24h,
-      pair_age_hours:row.pairAgeHours,provider_name:row.provider,source_timestamp:row.sourceTimestamp,ingestion_timestamp:new Date().toISOString(),
-      freshness_status:"FRESH",provider_quality:"PRIMARY",completeness_state:score.dataCoverageScore
+      pair_age_hours:row.pairAgeHours,provider_name:row.provider,source_timestamp:row.sourceTimestamp,ingestion_timestamp:now,
+      freshness_status:freshness,provider_quality:row.sourceTimestamp?"PRIMARY":"PRIMARY_NO_SOURCE_TIMESTAMP",completeness_state:score.dataCoverageScore
     });
     await db("scanner_evaluations","POST",{},{
-      token_id:tokenId,pair_id:pairId,evaluated_at:new Date().toISOString(),pre_rally_score:score.preRallyScore,
+      token_id:tokenId,pair_id:pairId,evaluated_at:now,pre_rally_score:score.preRallyScore,
       confidence_score:score.confidenceScore,data_coverage_score:score.dataCoverageScore,classification:score.classification,
       category_scores:score.categoryScores,positive_signals:score.positiveSignals,warning_flags:score.warningFlags,
-      critical_flags:score.criticalFlags,missing_data:score.missingData,freshness_status:"FRESH",
-      explanation:score.explanation,diagnostic_explanation:{provider:row.provider},scoring_model_version:score.modelVersion,
-      configuration_version:score.configVersion
+      critical_flags:score.criticalFlags,missing_data:score.missingData,freshness_status:freshness,
+      explanation:score.explanation,diagnostic_explanation:{provider:row.provider,sourceTimestampAvailable:Boolean(row.sourceTimestamp)},
+      scoring_model_version:score.modelVersion,configuration_version:score.configVersion
     });
   }
   async function run(){
