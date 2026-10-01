@@ -33,6 +33,6 @@ export function normalizePair(pair,now=Date.now()){
     priceChange1h:Number(chg.h1)||null,priceChange6h:Number(chg.h6)||null,priceChange24h:Number(chg.h24)||null,
     pairCreatedAt:created?new Date(created).toISOString():null,pairAgeHours:created?(now-created)/36e5:null,
     imageUrl:pair?.info?.imageUrl||null,websites:pair?.info?.websites||[],socials:pair?.info?.socials||[],
-    sourceTimestamp:new Date(now).toISOString(),sourceAgeSec:0,providerCount:1,raw:pair
+    sourceTimestamp:null,sourceAgeSec:null,providerCount:1,raw:pair
   };
 }
