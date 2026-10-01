@@ -18,6 +18,7 @@ const FEATURE_VERSION = "v2.0";
 const MODEL_ID = "rules_v2_adaptive";
 const H4_MODEL_ID = "rules_h4_swing_shadow_v1";
 const D1_MODEL_ID = "rules_d1_position_shadow_v1";
+const MTF_MODEL_ID = "rules_mtf_swing_position_shadow_v1";
 const H4_HORIZON_SECONDS = 4 * 60 * 60;
 const D1_HORIZON_SECONDS = 24 * 60 * 60;
 const TRAIN_INTERVAL_MS = 5 * 60 * 1000;
@@ -74,7 +75,8 @@ const state = {
   horizonResearch: {
     H1: { modelId: MODEL_ID, state: "VALIDATING" },
     H4: { modelId: H4_MODEL_ID, state: "DATA_WARMING", readyAssets: 0, candidates: 0, outcomes: 0 },
-    D1: { modelId: D1_MODEL_ID, state: "DATA_WARMING", readyAssets: 0, candidates: 0, outcomes: 0 }
+    D1: { modelId: D1_MODEL_ID, state: "DATA_WARMING", readyAssets: 0, candidates: 0, outcomes: 0 },
+    MTF: { modelId: MTF_MODEL_ID, state: "DATA_WARMING", readyAssets: 0, candidates: 0, outcomes: 0 }
   }
 };
 
@@ -258,7 +260,8 @@ async function ensureModel() {
 
   for (const spec of [
     { id: H4_MODEL_ID, horizon: "H4", family: "deterministic_swing_rules", target: "4h swing continuation shadow qualification" },
-    { id: D1_MODEL_ID, horizon: "D1", family: "deterministic_position_rules", target: "24h positional continuation shadow qualification" }
+    { id: D1_MODEL_ID, horizon: "D1", family: "deterministic_position_rules", target: "24h positional continuation shadow qualification" },
+    { id: MTF_MODEL_ID, horizon: "H4", family: "deterministic_multitimeframe_rules", target: "D1 directional context + H4 setup + H1 entry timing shadow qualification" }
   ]) {
     await sb("model_versions", "POST", { on_conflict: "model_id" }, {
       model_id: spec.id,
@@ -1080,10 +1083,169 @@ async function maybeWriteD1Shadow(asset, bars, d1Anchor) {
   return signal;
 }
 
+function mtfShadowDecision(asset, bars, d1Anchor) {
+  const h4 = h4ShadowDecision(asset, bars);
+  const d1 = d1ShadowDecision(asset, bars, d1Anchor);
+  const h1 = state.intelligence.features(asset.id);
+
+  if (h4.action === "NO TRADE" || d1.action === "NO TRADE") {
+    return { action: "NO TRADE", reason: "mtf_parent_setup_missing" };
+  }
+  if (h4.action !== d1.action) {
+    return { action: "NO TRADE", reason: "mtf_h4_d1_direction_conflict" };
+  }
+  if (!h1?.data_fresh || !h1?.microstructure_quality) {
+    return { action: "NO TRADE", reason: "mtf_h1_market_quality" };
+  }
+
+  const expectedSign = h4.action === "LONG" ? 1 : -1;
+  const alignment = finite(h1.alignment);
+  const r5 = finite(h1.return_5m);
+  const cvd10 = finite(h1.cvd_10m);
+  const spread = finite(h1.spread_bps, 999);
+
+  if (spread >= 8) return { action: "NO TRADE", reason: "mtf_spread_gate" };
+  if (expectedSign * alignment < 0.30) return { action: "NO TRADE", reason: "mtf_h1_alignment_gate" };
+  if (expectedSign * r5 <= 0) return { action: "NO TRADE", reason: "mtf_h1_price_timing_conflict" };
+  if (expectedSign * cvd10 < -0.05) return { action: "NO TRADE", reason: "mtf_h1_flow_conflict" };
+
+  const direction = h4.action;
+  const sign = direction === "LONG" ? 1 : -1;
+  const price = finite(h1.price || h4.entry);
+  const riskPct = clamp(Math.max(
+    0.006,
+    finite(h4.research?.avgRange) * 3.0,
+    finite(h1.realized_vol) * 1.25
+  ), 0.006, 0.025);
+
+  const structuralStrength = clamp(
+    0.45 * finite(h4.pT1, 0.5) +
+    0.35 * finite(d1.pT1, 0.5) +
+    0.20 * clamp(0.5 + expectedSign * alignment * 0.35, 0.5, 0.85),
+    0.50, 0.82
+  );
+  if (structuralStrength < 0.62) return { action: "NO TRADE", reason: "mtf_probability_gate" };
+
+  return {
+    action: direction,
+    horizon: "H4",
+    modelId: MTF_MODEL_ID,
+    maxHorizonSeconds: H4_HORIZON_SECONDS,
+    entry: price,
+    stopLoss: price * (1 - sign * riskPct),
+    target1: price * (1 + sign * riskPct),
+    target2: price * (1 + sign * riskPct * 2),
+    target3: price * (1 + sign * riskPct * 3),
+    pT1: structuralStrength,
+    pT2: clamp(structuralStrength * 0.75, 0.30, 0.72),
+    pT3: clamp(structuralStrength * 0.55, 0.20, 0.62),
+    expectedValue: structuralStrength * riskPct - (1 - structuralStrength) * riskPct,
+    riskState: "SHADOW",
+    reasons: [
+      "mtf_d1_direction_confirmed",
+      "mtf_h4_setup_confirmed",
+      "mtf_h1_entry_timing_confirmed",
+      "mtf_microstructure_quality_pass",
+      "shadow_validation_only"
+    ],
+    research: {
+      d1: d1.research,
+      h4: h4.research,
+      h1: {
+        alignment,
+        return_5m: r5,
+        cvd_10m: cvd10,
+        spread_bps: spread,
+        realized_vol: finite(h1.realized_vol)
+      }
+    }
+  };
+}
+
+async function maybeWriteMtfShadow(asset, bars, d1Anchor) {
+  if (state.killSwitch) return null;
+  const decision = mtfShadowDecision(asset, bars, d1Anchor);
+  if (decision.action === "NO TRADE") return null;
+
+  const cooldownKey = "MTF:" + asset.id;
+  const prior = state.lastSignalAt.get(cooldownKey) || 0;
+  if (Date.now() - prior < 60 * 60 * 1000) return null;
+
+  const snapshot = {
+    feature_version: FEATURE_VERSION,
+    model_id: MTF_MODEL_ID,
+    generated_at: iso(),
+    signal_mode: "SHADOW",
+    asset: asset.symbol,
+    horizon: "H4",
+    research: decision.research
+  };
+
+  await sb("setup_candidates", "POST", {}, {
+    asset_id: asset.id,
+    detected_at: iso(),
+    horizon: "H4",
+    direction: decision.action,
+    setup_type: "swing_position_multitimeframe_confluence",
+    status: "CANDIDATE",
+    evidence: { reasons: decision.reasons, probability_t1: decision.pT1, ...decision.research },
+    feature_snapshot: snapshot,
+    expires_at: iso(Date.now() + 2 * 60 * 60 * 1000)
+  });
+
+  await sb("model_predictions", "POST", {}, {
+    model_id: MTF_MODEL_ID,
+    asset_id: asset.id,
+    predicted_at: iso(),
+    direction: decision.action,
+    p_t1: decision.pT1,
+    p_t2: decision.pT2,
+    p_t3: decision.pT3,
+    expected_return: decision.expectedValue,
+    expected_loss: Math.max(0, 1 - decision.pT1),
+    calibration_version: "shadow_uncalibrated",
+    feature_snapshot: snapshot
+  });
+
+  const rows = await sb("signals", "POST", {}, {
+    asset_id: asset.id,
+    created_at: iso(),
+    horizon: "H4",
+    signal: decision.action,
+    entry: decision.entry,
+    stop_loss: decision.stopLoss,
+    target_1: decision.target1,
+    target_2: decision.target2,
+    target_3: decision.target3,
+    p_t1: decision.pT1,
+    p_t2: decision.pT2,
+    p_t3: decision.pT3,
+    expected_value: decision.expectedValue,
+    risk_state: "SHADOW",
+    data_quality: "HIGH",
+    model_id: MTF_MODEL_ID,
+    feature_version: FEATURE_VERSION,
+    reasons: decision.reasons,
+    snapshot,
+    immutable: true
+  }, { Prefer: "return=representation" });
+
+  const signal = rows?.[0];
+  if (!signal?.signal_id) return null;
+  state.lastSignalAt.set(cooldownKey, Date.now());
+  await maybeOpenPaperTrade(signal, asset, decision);
+  await writeSystemEvent("MTF_SHADOW_SIGNAL_CREATED", "info", "multitimeframe_engine", asset.symbol + " " + decision.action, {
+    signal_id: signal.signal_id,
+    horizon: "H4",
+    probability: decision.pT1
+  });
+  return signal;
+}
+
 async function refreshHorizonResearch() {
   try {
     if (!state.assets.length) return;
-    let h4Ready = 0, d1Ready = 0;
+    let h4Ready = 0, d1Ready = 0, mtfReady = 0;
 
     const histories = await Promise.all(state.assets.map(async asset => {
       const bars = await sb("ohlcv", "GET", {
@@ -1116,15 +1278,21 @@ async function refreshHorizonResearch() {
       if (d1Anchor) {
         d1Ready++;
         await maybeWriteD1Shadow(asset, bars, d1Anchor);
+        if (bars4h.length >= 180 && covers4h) {
+          mtfReady++;
+          await maybeWriteMtfShadow(asset, bars, d1Anchor);
+        }
       }
     }
 
-    const [h4Evidence, d1Evidence] = await Promise.all([
+    const [h4Evidence, d1Evidence, mtfEvidence] = await Promise.all([
       evaluateHorizonModel(H4_MODEL_ID),
-      evaluateHorizonModel(D1_MODEL_ID)
+      evaluateHorizonModel(D1_MODEL_ID),
+      evaluateHorizonModel(MTF_MODEL_ID)
     ]);
     const h4Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + H4_MODEL_ID, limit: "5000" });
     const d1Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + D1_MODEL_ID, limit: "5000" });
+    const mtfSignals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + MTF_MODEL_ID, limit: "5000" });
 
     state.horizonResearch.H1 = {
       modelId: MODEL_ID,
@@ -1151,6 +1319,16 @@ async function refreshHorizonResearch() {
       calibration: d1Evidence.calibration,
       validation: d1Evidence.validation,
       gate: d1Evidence.gate
+    };
+    state.horizonResearch.MTF = {
+      modelId: MTF_MODEL_ID,
+      state: mtfEvidence.gate.ready ? "VALIDATED_SHADOW" : (mtfReady >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING"),
+      readyAssets: mtfReady,
+      candidates: mtfSignals.length,
+      outcomes: mtfEvidence.calibration.sampleCount || 0,
+      calibration: mtfEvidence.calibration,
+      validation: mtfEvidence.validation,
+      gate: mtfEvidence.gate
     };
 
     await sb("model_versions", "PATCH", { model_id: "eq." + H4_MODEL_ID }, {
@@ -1187,6 +1365,24 @@ async function refreshHorizonResearch() {
       },
       calibration_method: "shadow_bayesian_outcome_calibration",
       status: state.horizonResearch.D1.state
+    });
+
+    await sb("model_versions", "PATCH", { model_id: "eq." + MTF_MODEL_ID }, {
+      training_window: {
+        type: "shadow_evidence_collection",
+        ready_assets: mtfReady,
+        candidate_count: mtfSignals.length,
+        outcome_count: mtfEvidence.calibration.sampleCount || 0
+      },
+      validation_metrics: {
+        coverage_ready_assets: mtfReady,
+        candidates: mtfSignals.length,
+        calibration: mtfEvidence.calibration,
+        validation: mtfEvidence.validation,
+        signal_gate: mtfEvidence.gate
+      },
+      calibration_method: "shadow_bayesian_outcome_calibration",
+      status: state.horizonResearch.MTF.state
     });
   } catch (e) {
     recordError(e, "horizon_research");
