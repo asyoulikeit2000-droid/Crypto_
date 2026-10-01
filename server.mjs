@@ -819,7 +819,7 @@ function h4ShadowDecision(asset, bars) {
   if (Math.sign(r1h) !== Math.sign(r4h) || Math.abs(r4h) < 0.004 || Math.abs(r1h) < 0.001) {
     return { action: "NO TRADE", reason: "h4_trend_alignment" };
   }
-  if (efficiency < 0.15) return { action: "NO TRADE", reason: "h4_low_trend_efficiency" };
+  if (efficiency < 0.12) return { action: "NO TRADE", reason: "h4_low_trend_efficiency" };
 
   const direction = r4h > 0 ? "LONG" : "SHORT";
   const sign = direction === "LONG" ? 1 : -1;
