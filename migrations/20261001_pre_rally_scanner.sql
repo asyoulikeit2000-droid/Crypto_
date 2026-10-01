@@ -215,6 +215,12 @@ grant select, insert, update, delete on
 to service_role;
 grant usage, select on all sequences in schema engine to service_role;
 
+-- Future engine tables must remain reachable by the server-side secret key role.
+alter default privileges for role postgres in schema engine
+  grant select, insert, update, delete on tables to service_role;
+alter default privileges for role postgres in schema engine
+  grant usage, select on sequences to service_role;
+
 drop policy if exists scanner_watchlists_owner_select on engine.scanner_watchlists;
 create policy scanner_watchlists_owner_select on engine.scanner_watchlists for select to authenticated
 using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
