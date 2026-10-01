@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { rankEligibleUniverse } from "./universe-engine.mjs";
 import { createIntelligenceEngine } from "./intelligence-engine.mjs";
 import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-gates.mjs";
+import { createPreRallyScanner } from "./scanner/service.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -2210,6 +2211,9 @@ async function serveStatic(pathname, res) {
   }
 }
 
+const preRallyScanner = createPreRallyScanner({ db: sb, log });
+const PRE_RALLY_DISCLAIMER = "This is an automated research signal based on market and blockchain data. It is not financial advice, does not guarantee future price movement, and may produce false positives.";
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", "http://" + (req.headers.host || "localhost"));
@@ -2222,6 +2226,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/market") {
       return jsonReply(res, 200, { assets: publicMarket() });
+    }
+    if (req.method === "GET" && url.pathname === "/api/pre-rally") {
+      return jsonReply(res, 200, { ...preRallyScanner.state, disclaimer: PRE_RALLY_DISCLAIMER });
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/api/pre-rally/token/")) {
+      const tokenAddress = decodeURIComponent(url.pathname.slice("/api/pre-rally/token/".length));
+      const token = preRallyScanner.state.tokens.find(x => x.tokenAddress === tokenAddress) || null;
+      return jsonReply(res, token ? 200 : 404, token ? { token, disclaimer: PRE_RALLY_DISCLAIMER } : { error: "not_found" });
     }
     if (req.method === "GET" && url.pathname === "/api/signals") {
       return jsonReply(res, 200, { signals: (await dashboardPayload()).signals });
@@ -2288,6 +2300,7 @@ async function boot() {
     assets: state.assets.length,
     paper_only: true
   });
+  preRallyScanner.start();
 
   setInterval(() => refreshUniverse().catch(e => recordError(e, "universe_interval")), UNIVERSE_REFRESH_MS);
   setInterval(() => refreshHorizonResearch().catch(e => recordError(e, "horizon_interval")), HORIZON_RESEARCH_INTERVAL_MS);
