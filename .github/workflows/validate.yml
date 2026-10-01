@@ -19,4 +19,6 @@ jobs:
       - run: node --check server.mjs
       - run: node --check intelligence-engine.mjs
       - run: node --check universe-engine.mjs
+      - run: node --check signal-gates.mjs
       - run: node --check public/app.js
+      - run: npm test

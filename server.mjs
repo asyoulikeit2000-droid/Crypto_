@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rankEligibleUniverse } from "./universe-engine.mjs";
 import { createIntelligenceEngine } from "./intelligence-engine.mjs";
+import { evaluateSignalReadiness } from "./signal-gates.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -863,13 +864,12 @@ async function refreshHorizonResearch() {
   }
 }
 
+function modelSignalGate() {
+  return evaluateSignalReadiness(state.calibration, state.validation);
+}
+
 function modelSignalReady() {
-  const test = state.validation?.test || {};
-  return state.calibration?.status === "ACTIVE" &&
-    state.validation?.status === "COMPLETE" &&
-    finite(test.n) >= 20 &&
-    finite(test.avgPnl) > 0 &&
-    finite(test.totalPnl) > 0;
+  return modelSignalGate().ready;
 }
 
 function computeSignal(asset, feat, shadowMode = false) {
@@ -1551,7 +1551,7 @@ async function dashboardPayload() {
         secondary: "SCALP_CONDITIONAL",
         note: "Current validated model horizon is H1; multi-hour and multi-day swing horizons require separate validation."
       },
-      safety: { paperOnly: true, executionEnabled: false, signalReady: modelSignalReady() },
+      safety: { paperOnly: true, executionEnabled: false, signalReady: modelSignalReady(), signalGate: modelSignalGate() },
       errors
     },
     market: publicMarket(),
@@ -1607,7 +1607,8 @@ async function healthPayload() {
     paperOnly: true,
     executionEnabled: false,
     signalReady: modelSignalReady(),
-    signalGateReason: modelSignalReady() ? null : "Model has not yet demonstrated positive out-of-sample paper edge.",
+    signalGate: modelSignalGate(),
+    signalGateReason: modelSignalReady() ? null : modelSignalGate().failed.join(", "),
     killSwitch: state.killSwitch,
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
