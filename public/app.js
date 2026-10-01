@@ -44,9 +44,9 @@ function render(){
   $("#h1State").textContent=A(h1.state||"VALIDATING");
   $("#h1Copy").textContent=`H1 evidence outcomes: ${A(h1.outcomes)} · actionable only after all model gates pass.`;
   $("#h4State").textContent=A(h4.state||"DATA_WARMING").replaceAll("_"," ");
-  $("#h4Copy").textContent=`${A(h4.readyAssets)} assets data-ready · ${A(h4.candidates)} shadow candidates · ${A(h4.outcomes)} completed outcomes.`;
+  const h4t=h4.validation?.test||{}; $("#h4Copy").textContent=`${A(h4.readyAssets)} assets ready · ${A(h4.candidates)} candidates · ${A(h4.outcomes)} outcomes · OOS n=${A(h4t.n)} · avg ${num(h4t.avgPnl,4)} · total ${num(h4t.totalPnl,4)}`;
   $("#d1State").textContent=A(d1.state||"DATA_WARMING").replaceAll("_"," ");
-  $("#d1Copy").textContent=`${A(d1.readyAssets)} assets have full-day coverage. D1 research stays locked until enough history exists.`;
+  const d1t=d1.validation?.test||{}; $("#d1Copy").textContent=`${A(d1.readyAssets)} assets ready · ${A(d1.candidates)} candidates · ${A(d1.outcomes)} outcomes · OOS n=${A(d1t.n)} · avg ${num(d1t.avgPnl,4)} · total ${num(d1t.totalPnl,4)}`;
 
   const checks=[
     [cal.status==="ACTIVE","Calibration","ACTIVE required"],

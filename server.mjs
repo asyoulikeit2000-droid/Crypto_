@@ -642,6 +642,110 @@ function meanNumbers(values) {
   return xs.length ? xs.reduce((a,b)=>a+b,0)/xs.length : 0;
 }
 
+
+async function evaluateHorizonModel(modelId) {
+  try {
+    const signals = await sb("signals", "GET", {
+      select: "signal_id,signal,p_t1,created_at",
+      model_id: "eq." + modelId,
+      order: "created_at.asc",
+      limit: "5000"
+    });
+    const signalById = new Map(signals.map(x => [x.signal_id, x]));
+    if (!signals.length) {
+      const calibration = { status: "WARMING", sampleCount: 0, rawWinRate: null, brierScore: null };
+      const validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: 0, test: { n: 0, winRate: 0, avgPnl: 0, totalPnl: 0 } };
+      return { calibration, validation, gate: evaluateSignalReadiness(calibration, validation) };
+    }
+
+    const outcomes = await sb("signal_outcomes", "GET", {
+      select: "signal_id,evaluated_at,outcome,t1_hit,pnl_after_cost",
+      order: "evaluated_at.asc",
+      limit: "5000"
+    });
+    const usable = outcomes.filter(x => signalById.has(x.signal_id));
+    let wins = 0, brier = 0;
+    const dir = { LONG: { n: 0, w: 0 }, SHORT: { n: 0, w: 0 } };
+    for (const o of usable) {
+      const s = signalById.get(o.signal_id);
+      const p = clamp(finite(s?.p_t1, 0.5), 0, 1);
+      const y = o.t1_hit ? 1 : 0;
+      wins += y;
+      brier += (p - y) ** 2;
+      const d = String(s?.signal || "").toUpperCase();
+      if (dir[d]) { dir[d].n++; dir[d].w += y; }
+    }
+    const priorMean = 0.20, priorStrength = 12;
+    const smooth = (w, n) => (w + priorMean * priorStrength) / (n + priorStrength);
+    const calibration = {
+      status: usable.length >= 50 ? "ACTIVE" : "WARMING",
+      sampleCount: usable.length,
+      rawWinRate: usable.length ? wins / usable.length : null,
+      brierScore: usable.length ? brier / usable.length : null,
+      globalProbability: usable.length ? smooth(wins, usable.length) : null,
+      byDirection: {
+        LONG: dir.LONG.n ? smooth(dir.LONG.w, dir.LONG.n) : null,
+        SHORT: dir.SHORT.n ? smooth(dir.SHORT.w, dir.SHORT.n) : null
+      }
+    };
+
+    const metrics = part => {
+      const pnls = part.map(x => finite(x.pnl_after_cost));
+      const partWins = part.filter(x => ["TARGET_1","TARGET_2","TARGET_3"].includes(String(x.outcome || ""))).length;
+      return {
+        n: part.length,
+        wins: partWins,
+        winRate: part.length ? partWins / part.length : 0,
+        avgPnl: pnls.length ? pnls.reduce((a,b)=>a+b,0) / pnls.length : 0,
+        totalPnl: pnls.reduce((a,b)=>a+b,0)
+      };
+    };
+
+    let validation;
+    if (usable.length < 20) {
+      validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: usable.length, test: metrics([]) };
+    } else {
+      const split = Math.max(10, Math.floor(usable.length * 0.70));
+      const train = usable.slice(0, split);
+      const test = usable.slice(split);
+      validation = {
+        status: "COMPLETE",
+        evaluatedAt: iso(),
+        sampleCount: usable.length,
+        split: { train: train.length, test: test.length, method: "chronological_70_30" },
+        train: metrics(train),
+        test: metrics(test)
+      };
+    }
+    const gate = evaluateSignalReadiness(calibration, validation);
+
+    if (usable.length) {
+      await sb("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
+        calibration_id: modelId + ":shadow:" + usable.length,
+        model_id: modelId,
+        method: "shadow_bayesian_outcome_calibration",
+        trained_at: iso(),
+        metrics: {
+          sample_count: calibration.sampleCount,
+          raw_win_rate: calibration.rawWinRate,
+          brier_score: calibration.brierScore,
+          global_probability: calibration.globalProbability,
+          status: calibration.status,
+          signal_ready: gate.ready
+        },
+        bins: [],
+        active: gate.ready
+      }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+    }
+    return { calibration, validation, gate };
+  } catch (e) {
+    recordError(e, "horizon_model_evidence:" + modelId);
+    const calibration = { status: "FAILED", sampleCount: 0 };
+    const validation = { status: "FAILED", test: { n: 0, avgPnl: 0, totalPnl: 0 } };
+    return { calibration, validation, gate: evaluateSignalReadiness(calibration, validation), error: String(e?.message || e) };
+  }
+}
+
 function h4ShadowDecision(asset, bars) {
   if (!Array.isArray(bars) || bars.length < 180) return { action: "NO TRADE", reason: "h4_insufficient_bars" };
   const now = Date.now();
@@ -792,6 +896,163 @@ async function maybeWriteH4Shadow(asset, bars) {
   return signal;
 }
 
+
+function d1ShadowDecision(asset, bars, d1Anchor) {
+  if (!Array.isArray(bars) || bars.length < 180 || !d1Anchor?.close) return { action: "NO TRADE", reason: "d1_insufficient_history" };
+  const now = Date.now();
+  const latest = bars.at(-1);
+  const b1h = barBefore(bars, now - 60 * 60 * 1000);
+  const b4h = barBefore(bars, now - 4 * 60 * 60 * 1000);
+  if (!latest || !b1h || !b4h) return { action: "NO TRADE", reason: "d1_coverage_gap" };
+
+  const price = finite(state.market.get(asset.id)?.price || latest.close);
+  const c1 = finite(b1h.close), c4 = finite(b4h.close), c24 = finite(d1Anchor.close);
+  if (!price || !c1 || !c4 || !c24) return { action: "NO TRADE", reason: "d1_price_missing" };
+
+  const r1h = Math.log(price / c1);
+  const r4h = Math.log(price / c4);
+  const r24h = Math.log(price / c24);
+  const recent = bars.filter(b => Date.parse(b.bucket_start) >= now - 60 * 60 * 1000);
+  const prior = bars.filter(b => {
+    const t = Date.parse(b.bucket_start);
+    return t >= now - 2 * 60 * 60 * 1000 && t < now - 60 * 60 * 1000;
+  });
+  const recentVol = meanNumbers(recent.map(x => x.volume));
+  const priorVol = meanNumbers(prior.map(x => x.volume));
+  const volumeRatio = priorVol > 0 ? recentVol / priorVol : 1;
+  const avgRange = meanNumbers(recent.map(x => {
+    const close = finite(x.close);
+    return close > 0 ? (finite(x.high) - finite(x.low)) / close : 0;
+  }));
+
+  let pathMove = 0;
+  for (let i=1;i<bars.length;i++) {
+    if (Date.parse(bars[i].bucket_start) < now - 4 * 60 * 60 * 1000) continue;
+    const a = finite(bars[i-1].close), b = finite(bars[i].close);
+    if (a > 0 && b > 0) pathMove += Math.abs(Math.log(b/a));
+  }
+  const efficiency = pathMove > 0 ? clamp(Math.abs(r4h) / pathMove, 0, 1) : 0;
+  const market = state.market.get(asset.id) || {};
+  const spread = finite(market.spreadBps, 999);
+  const fresh = Boolean(market.updatedAt && Date.now() - market.updatedAt < 20000);
+
+  if (!fresh || spread >= 8) return { action: "NO TRADE", reason: "d1_market_quality" };
+  if (Math.sign(r1h) !== Math.sign(r4h) || Math.sign(r4h) !== Math.sign(r24h)) return { action: "NO TRADE", reason: "d1_multitimeframe_conflict" };
+  if (Math.abs(r24h) < 0.015 || Math.abs(r4h) < 0.004 || Math.abs(r1h) < 0.001) return { action: "NO TRADE", reason: "d1_trend_strength" };
+  if (Math.abs(r24h) > 0.25 || efficiency < 0.10 || volumeRatio < 0.65) return { action: "NO TRADE", reason: "d1_quality_gate" };
+
+  const direction = r24h > 0 ? "LONG" : "SHORT";
+  const sign = direction === "LONG" ? 1 : -1;
+  const riskPct = clamp(Math.max(0.01, avgRange * 6), 0.01, 0.06);
+  const rawP = clamp(
+    0.50 +
+    Math.min(0.12, Math.abs(r24h) * 1.5) +
+    Math.min(0.08, Math.abs(r4h) * 4) +
+    Math.min(0.04, Math.max(0, volumeRatio - 1) * 0.03) +
+    efficiency * 0.08,
+    0.50, 0.82
+  );
+  if (rawP < 0.62) return { action: "NO TRADE", reason: "d1_probability_gate" };
+
+  return {
+    action: direction,
+    horizon: "D1",
+    modelId: D1_MODEL_ID,
+    maxHorizonSeconds: D1_HORIZON_SECONDS,
+    entry: price,
+    stopLoss: price * (1 - sign * riskPct),
+    target1: price * (1 + sign * riskPct),
+    target2: price * (1 + sign * riskPct * 2),
+    target3: price * (1 + sign * riskPct * 3),
+    pT1: rawP,
+    pT2: clamp(rawP * 0.74, 0.30, 0.72),
+    pT3: clamp(rawP * 0.54, 0.20, 0.62),
+    expectedValue: rawP * riskPct - (1 - rawP) * riskPct,
+    riskState: "SHADOW",
+    reasons: ["d1_24h_4h_1h_alignment","d1_liquidity_pass","d1_trend_efficiency","shadow_validation_only"],
+    research: { r1h, r4h, r24h, volumeRatio, efficiency, avgRange, bars: bars.length }
+  };
+}
+
+async function maybeWriteD1Shadow(asset, bars, d1Anchor) {
+  if (state.killSwitch) return null;
+  const decision = d1ShadowDecision(asset, bars, d1Anchor);
+  if (decision.action === "NO TRADE") return null;
+  const cooldownKey = "D1:" + asset.id;
+  const prior = state.lastSignalAt.get(cooldownKey) || 0;
+  if (Date.now() - prior < 2 * 60 * 60 * 1000) return null;
+
+  const snapshot = {
+    feature_version: FEATURE_VERSION,
+    model_id: D1_MODEL_ID,
+    generated_at: iso(),
+    signal_mode: "SHADOW",
+    asset: asset.symbol,
+    horizon: "D1",
+    research: decision.research
+  };
+
+  await sb("setup_candidates", "POST", {}, {
+    asset_id: asset.id,
+    detected_at: iso(),
+    horizon: "D1",
+    direction: decision.action,
+    setup_type: "position_multitimeframe_continuation",
+    status: "CANDIDATE",
+    evidence: { reasons: decision.reasons, probability_t1: decision.pT1, ...decision.research },
+    feature_snapshot: snapshot,
+    expires_at: iso(Date.now() + 6 * 60 * 60 * 1000)
+  });
+
+  await sb("model_predictions", "POST", {}, {
+    model_id: D1_MODEL_ID,
+    asset_id: asset.id,
+    predicted_at: iso(),
+    direction: decision.action,
+    p_t1: decision.pT1,
+    p_t2: decision.pT2,
+    p_t3: decision.pT3,
+    expected_return: decision.expectedValue,
+    expected_loss: Math.max(0, 1 - decision.pT1),
+    calibration_version: "shadow_uncalibrated",
+    feature_snapshot: snapshot
+  });
+
+  const rows = await sb("signals", "POST", {}, {
+    asset_id: asset.id,
+    created_at: iso(),
+    horizon: "D1",
+    signal: decision.action,
+    entry: decision.entry,
+    stop_loss: decision.stopLoss,
+    target_1: decision.target1,
+    target_2: decision.target2,
+    target_3: decision.target3,
+    p_t1: decision.pT1,
+    p_t2: decision.pT2,
+    p_t3: decision.pT3,
+    expected_value: decision.expectedValue,
+    risk_state: "SHADOW",
+    data_quality: "HIGH",
+    model_id: D1_MODEL_ID,
+    feature_version: FEATURE_VERSION,
+    reasons: decision.reasons,
+    snapshot,
+    immutable: true
+  }, { Prefer: "return=representation" });
+
+  const signal = rows?.[0];
+  if (!signal?.signal_id) return null;
+  state.lastSignalAt.set(cooldownKey, Date.now());
+  await maybeOpenPaperTrade(signal, asset, decision);
+  await writeSystemEvent("D1_SHADOW_SIGNAL_CREATED", "info", "position_engine", asset.symbol + " " + decision.action, {
+    signal_id: signal.signal_id,
+    horizon: "D1",
+    probability: decision.pT1
+  });
+  return signal;
+}
+
 async function refreshHorizonResearch() {
   try {
     if (!state.assets.length) return;
@@ -806,7 +1067,7 @@ async function refreshHorizonResearch() {
         order: "bucket_start.asc",
         limit: "500"
       });
-      const d1Anchor = await sb("ohlcv", "GET", {
+      const d1Rows = await sb("ohlcv", "GET", {
         select: "bucket_start,close",
         asset_id: "eq." + asset.id,
         timeframe: "eq.1m",
@@ -814,49 +1075,90 @@ async function refreshHorizonResearch() {
         order: "bucket_start.desc",
         limit: "1"
       });
-      return { asset, bars, hasD1Anchor: Boolean(d1Anchor?.length) };
+      return { asset, bars, d1Anchor: d1Rows?.[0] || null };
     }));
 
     const now = Date.now();
-    for (const { asset, bars, hasD1Anchor } of histories) {
+    for (const { asset, bars, d1Anchor } of histories) {
       const bars4h = bars.filter(x => Date.parse(x.bucket_start) >= now - 4 * 60 * 60 * 1000);
       const covers4h = bars.length && Date.parse(bars[0].bucket_start) <= now - 3.5 * 60 * 60 * 1000;
       if (bars4h.length >= 180 && covers4h) {
         h4Ready++;
         await maybeWriteH4Shadow(asset, bars);
       }
-      if (hasD1Anchor) d1Ready++;
+      if (d1Anchor) {
+        d1Ready++;
+        await maybeWriteD1Shadow(asset, bars, d1Anchor);
+      }
     }
 
+    const [h4Evidence, d1Evidence] = await Promise.all([
+      evaluateHorizonModel(H4_MODEL_ID),
+      evaluateHorizonModel(D1_MODEL_ID)
+    ]);
     const h4Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + H4_MODEL_ID, limit: "5000" });
-    const h4Ids = new Set(h4Signals.map(x => x.signal_id));
-    const outcomes = await sb("signal_outcomes", "GET", { select: "signal_id", limit: "5000" });
-    const h4Outcomes = outcomes.filter(x => h4Ids.has(x.signal_id)).length;
+    const d1Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + D1_MODEL_ID, limit: "5000" });
 
-    state.horizonResearch.H1 = { modelId: MODEL_ID, state: modelSignalReady() ? "VALIDATED" : "VALIDATING", outcomes: state.calibration.sampleCount || 0 };
+    state.horizonResearch.H1 = {
+      modelId: MODEL_ID,
+      state: modelSignalReady() ? "VALIDATED" : "VALIDATING",
+      outcomes: state.calibration.sampleCount || 0,
+      gate: modelSignalGate()
+    };
     state.horizonResearch.H4 = {
       modelId: H4_MODEL_ID,
-      state: h4Ready >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING",
+      state: h4Evidence.gate.ready ? "VALIDATED_SHADOW" : (h4Ready >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING"),
       readyAssets: h4Ready,
       candidates: h4Signals.length,
-      outcomes: h4Outcomes
+      outcomes: h4Evidence.calibration.sampleCount || 0,
+      calibration: h4Evidence.calibration,
+      validation: h4Evidence.validation,
+      gate: h4Evidence.gate
     };
     state.horizonResearch.D1 = {
       modelId: D1_MODEL_ID,
-      state: d1Ready >= 5 ? "DATA_READY_RESEARCH_LOCKED" : "DATA_WARMING",
+      state: d1Evidence.gate.ready ? "VALIDATED_SHADOW" : (d1Ready >= 5 ? "SHADOW_COLLECTING" : "DATA_WARMING"),
       readyAssets: d1Ready,
-      candidates: 0,
-      outcomes: 0
+      candidates: d1Signals.length,
+      outcomes: d1Evidence.calibration.sampleCount || 0,
+      calibration: d1Evidence.calibration,
+      validation: d1Evidence.validation,
+      gate: d1Evidence.gate
     };
 
     await sb("model_versions", "PATCH", { model_id: "eq." + H4_MODEL_ID }, {
-      training_window: { type: "shadow_evidence_collection", ready_assets: h4Ready, candidate_count: h4Signals.length, outcome_count: h4Outcomes },
-      validation_metrics: { coverage_ready_assets: h4Ready, candidates: h4Signals.length, outcomes: h4Outcomes },
+      training_window: {
+        type: "shadow_evidence_collection",
+        ready_assets: h4Ready,
+        candidate_count: h4Signals.length,
+        outcome_count: h4Evidence.calibration.sampleCount || 0
+      },
+      validation_metrics: {
+        coverage_ready_assets: h4Ready,
+        candidates: h4Signals.length,
+        calibration: h4Evidence.calibration,
+        validation: h4Evidence.validation,
+        signal_gate: h4Evidence.gate
+      },
+      calibration_method: "shadow_bayesian_outcome_calibration",
       status: state.horizonResearch.H4.state
     });
+
     await sb("model_versions", "PATCH", { model_id: "eq." + D1_MODEL_ID }, {
-      training_window: { type: "data_warming", ready_assets: d1Ready, required_history_hours: 24 },
-      validation_metrics: { coverage_ready_assets: d1Ready },
+      training_window: {
+        type: "shadow_evidence_collection",
+        ready_assets: d1Ready,
+        candidate_count: d1Signals.length,
+        outcome_count: d1Evidence.calibration.sampleCount || 0
+      },
+      validation_metrics: {
+        coverage_ready_assets: d1Ready,
+        candidates: d1Signals.length,
+        calibration: d1Evidence.calibration,
+        validation: d1Evidence.validation,
+        signal_gate: d1Evidence.gate
+      },
+      calibration_method: "shadow_bayesian_outcome_calibration",
       status: state.horizonResearch.D1.state
     });
   } catch (e) {
