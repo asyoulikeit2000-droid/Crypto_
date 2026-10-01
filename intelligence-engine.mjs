@@ -24,7 +24,7 @@ export function createIntelligenceEngine(){
     const imbalance=Number(b.imbalance)||0, spread=Number(b.spreadBps);
     const alignment=clamp((Math.sign(r5)===Math.sign(cvd10)?1:-1)*(Math.min(1,Math.abs(r5)*100)+Math.min(1,Math.abs(cvd10)*2))/2,-1,1);
     const direction=alignment>0.25?"LONG":alignment<-0.25?"SHORT":"NO TRADE";
-    const dataFresh=b.updatedAt && now-b.updatedAt<20000 && ps.length>=5;
+    const dataFresh=Boolean(b.updatedAt && now-b.updatedAt<20000 && ps.length>=5);
     const microQuality=dataFresh && Number.isFinite(spread) && spread<12 && Math.abs(imbalance)<0.95;
     const reasonCodes=[];
     if(!dataFresh)reasonCodes.push("STALE_OR_THIN");
