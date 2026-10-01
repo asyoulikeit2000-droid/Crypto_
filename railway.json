@@ -7,7 +7,7 @@
   "deploy": {
     "startCommand": "node server.mjs",
     "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 300,
+    "healthcheckTimeout": 900,
     "restartPolicyType": "ON_FAILURE"
   }
 }
