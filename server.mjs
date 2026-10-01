@@ -2247,21 +2247,36 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function warmResearchState() {
+  state.bootStage = "research_warmup";
+  const jobs = [
+    ["calibration_warmup", () => trainCalibration(true)],
+    ["validation_warmup", () => runWalkForwardValidation()],
+    ["horizon_warmup", () => refreshHorizonResearch()]
+  ];
+  for (const [context, job] of jobs) {
+    try {
+      await job();
+    } catch (e) {
+      recordError(e, context);
+    }
+  }
+  state.bootStage = "ready";
+}
+
 async function boot() {
   state.bootStage = "configuring";
   requireConfigured();
   await readKillSwitch();
   await ensureFeatureRegistry();
   await ensureModel();
-  await trainCalibration(true);
-  await runWalkForwardValidation();
 
   state.bootStage = "universe";
   await refreshUniverse();
 
   state.bootStage = "live_market";
   await pollMarketData();
-  await refreshHorizonResearch();
+
   const readiness = healthReadiness();
   if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.supabaseLive) {
     throw new Error(
@@ -2271,13 +2286,16 @@ async function boot() {
       ", supabase=" + readiness.supabaseLive
     );
   }
+
   state.ready = true;
+  state.bootStage = "ready";
   log("engine_ready", {
     assets: state.assets.length,
     paperOnly: true,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     liveTradeStream: readiness.live,
-    liveOrderbookStream: readiness.bookLive
+    liveOrderbookStream: readiness.bookLive,
+    supabaseLive: readiness.supabaseLive
   });
   await writeSystemEvent("ENGINE_READY", "info", "runtime", "Crypto Intelligence Engine ready", {
     assets: state.assets.length,
@@ -2294,6 +2312,8 @@ async function boot() {
   setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
   setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), VALIDATION_INTERVAL_MS);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
+
+  setImmediate(() => warmResearchState().catch(e => recordError(e, "research_warmup")));
 }
 
 server.listen(PORT, HOST, () => {
