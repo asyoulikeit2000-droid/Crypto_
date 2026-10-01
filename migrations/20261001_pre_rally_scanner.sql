@@ -179,30 +179,67 @@ create table if not exists engine.scanner_jobs (
   created_at timestamptz not null default now()
 );
 
+alter table engine.scanner_tokens enable row level security;
+alter table engine.scanner_pairs enable row level security;
+alter table engine.scanner_market_snapshots enable row level security;
+alter table engine.scanner_enrichment_snapshots enable row level security;
+alter table engine.scanner_evaluations enable row level security;
+alter table engine.scanner_jobs enable row level security;
 alter table engine.scanner_watchlists enable row level security;
 alter table engine.scanner_watchlist_tokens enable row level security;
 alter table engine.scanner_alert_preferences enable row level security;
 alter table engine.scanner_alert_history enable row level security;
 
+revoke all on engine.scanner_tokens, engine.scanner_pairs, engine.scanner_market_snapshots,
+  engine.scanner_enrichment_snapshots, engine.scanner_evaluations, engine.scanner_jobs,
+  engine.scanner_watchlists, engine.scanner_watchlist_tokens, engine.scanner_alert_preferences,
+  engine.scanner_alert_history from anon, authenticated;
+
+grant select, insert, update, delete on engine.scanner_watchlists to authenticated;
+grant select, insert, delete on engine.scanner_watchlist_tokens to authenticated;
+grant select, insert, update, delete on engine.scanner_alert_preferences to authenticated;
+grant select on engine.scanner_alert_history to authenticated;
+
 drop policy if exists scanner_watchlists_owner_select on engine.scanner_watchlists;
-create policy scanner_watchlists_owner_select on engine.scanner_watchlists for select to authenticated using ((select auth.uid()) = user_id);
+create policy scanner_watchlists_owner_select on engine.scanner_watchlists for select to authenticated
+using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
 drop policy if exists scanner_watchlists_owner_insert on engine.scanner_watchlists;
-create policy scanner_watchlists_owner_insert on engine.scanner_watchlists for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy scanner_watchlists_owner_insert on engine.scanner_watchlists for insert to authenticated
+with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
 drop policy if exists scanner_watchlists_owner_update on engine.scanner_watchlists;
-create policy scanner_watchlists_owner_update on engine.scanner_watchlists for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy scanner_watchlists_owner_update on engine.scanner_watchlists for update to authenticated
+using ((select auth.uid()) is not null and (select auth.uid()) = user_id)
+with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
 drop policy if exists scanner_watchlists_owner_delete on engine.scanner_watchlists;
-create policy scanner_watchlists_owner_delete on engine.scanner_watchlists for delete to authenticated using ((select auth.uid()) = user_id);
+create policy scanner_watchlists_owner_delete on engine.scanner_watchlists for delete to authenticated
+using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
 
-drop policy if exists scanner_watchlist_tokens_owner on engine.scanner_watchlist_tokens;
-create policy scanner_watchlist_tokens_owner on engine.scanner_watchlist_tokens for all to authenticated
-using (exists (select 1 from engine.scanner_watchlists w where w.watchlist_id=scanner_watchlist_tokens.watchlist_id and w.user_id=(select auth.uid())))
+drop policy if exists scanner_watchlist_tokens_owner_select on engine.scanner_watchlist_tokens;
+create policy scanner_watchlist_tokens_owner_select on engine.scanner_watchlist_tokens for select to authenticated
+using (exists (select 1 from engine.scanner_watchlists w where w.watchlist_id=scanner_watchlist_tokens.watchlist_id and w.user_id=(select auth.uid())));
+drop policy if exists scanner_watchlist_tokens_owner_insert on engine.scanner_watchlist_tokens;
+create policy scanner_watchlist_tokens_owner_insert on engine.scanner_watchlist_tokens for insert to authenticated
 with check (exists (select 1 from engine.scanner_watchlists w where w.watchlist_id=scanner_watchlist_tokens.watchlist_id and w.user_id=(select auth.uid())));
+drop policy if exists scanner_watchlist_tokens_owner_delete on engine.scanner_watchlist_tokens;
+create policy scanner_watchlist_tokens_owner_delete on engine.scanner_watchlist_tokens for delete to authenticated
+using (exists (select 1 from engine.scanner_watchlists w where w.watchlist_id=scanner_watchlist_tokens.watchlist_id and w.user_id=(select auth.uid())));
 
-drop policy if exists scanner_alert_preferences_owner on engine.scanner_alert_preferences;
-create policy scanner_alert_preferences_owner on engine.scanner_alert_preferences for all to authenticated
-using ((select auth.uid())=user_id) with check ((select auth.uid())=user_id);
+drop policy if exists scanner_alert_preferences_owner_select on engine.scanner_alert_preferences;
+create policy scanner_alert_preferences_owner_select on engine.scanner_alert_preferences for select to authenticated
+using ((select auth.uid()) is not null and (select auth.uid())=user_id);
+drop policy if exists scanner_alert_preferences_owner_insert on engine.scanner_alert_preferences;
+create policy scanner_alert_preferences_owner_insert on engine.scanner_alert_preferences for insert to authenticated
+with check ((select auth.uid()) is not null and (select auth.uid())=user_id);
+drop policy if exists scanner_alert_preferences_owner_update on engine.scanner_alert_preferences;
+create policy scanner_alert_preferences_owner_update on engine.scanner_alert_preferences for update to authenticated
+using ((select auth.uid()) is not null and (select auth.uid())=user_id)
+with check ((select auth.uid()) is not null and (select auth.uid())=user_id);
+drop policy if exists scanner_alert_preferences_owner_delete on engine.scanner_alert_preferences;
+create policy scanner_alert_preferences_owner_delete on engine.scanner_alert_preferences for delete to authenticated
+using ((select auth.uid()) is not null and (select auth.uid())=user_id);
 
-drop policy if exists scanner_alert_history_owner on engine.scanner_alert_history;
-create policy scanner_alert_history_owner on engine.scanner_alert_history for select to authenticated using ((select auth.uid())=user_id);
+drop policy if exists scanner_alert_history_owner_select on engine.scanner_alert_history;
+create policy scanner_alert_history_owner_select on engine.scanner_alert_history for select to authenticated
+using ((select auth.uid()) is not null and (select auth.uid())=user_id);
 
 comment on table engine.scanner_evaluations is 'Append-only pre-rally research score history. Not trading advice or an execution signal.';
