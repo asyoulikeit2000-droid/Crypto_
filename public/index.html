@@ -19,6 +19,7 @@
     <button data-s="overview" class="on"><span>⌂</span>Overview</button>
     <button data-s="signals"><span>◈</span>Signals</button>
     <button data-s="market"><span>◒</span>Market</button>
+    <button data-s="scanner"><span>⌁</span>Pre-Rally</button>
     <button data-s="paper"><span>◫</span>Paper</button>
     <button data-s="data"><span>◌</span>Quality</button>
     <button data-s="system"><span>⚙</span>System</button>
@@ -103,6 +104,18 @@
   <div class="panel" id="marketTable"></div>
 </section>
 
+<section id="scanner">
+  <div class="section-head">
+    <div><span class="eyebrow">RESEARCH DISCOVERY</span><h2>Pre-Rally Token Scanner</h2><p>Early accumulation and improving-momentum research candidates. No trade execution.</p></div>
+    <span class="mode-chip">RESEARCH ONLY</span>
+  </div>
+  <div class="scanner-disclaimer">This is an automated research signal based on market and blockchain data. It is not financial advice, does not guarantee future price movement, and may produce false positives.</div>
+  <div id="scannerStatus" class="notice">Scanner loading…</div>
+  <div class="scanner-metrics" id="scannerMetrics"></div>
+  <div class="panel" id="scannerTable"><div class="empty">Scanner data loading…</div></div>
+  <div id="scannerDetail" class="scanner-detail"></div>
+</section>
+
 <section id="paper">
   <div class="section-head"><div><span class="eyebrow">VALIDATION</span><h2>Paper Trading</h2><p>Execution-free evidence collection.</p></div><span class="mode-chip">NO LIVE EXECUTION</span></div>
   <div id="paperSummary" class="paper-summary"></div>
@@ -128,6 +141,7 @@
   <button data-s="overview" class="on"><span>⌂</span><small>Home</small></button>
   <button data-s="signals"><span>◈</span><small>Signals</small></button>
   <button data-s="market"><span>◒</span><small>Market</small></button>
+  <button data-s="scanner"><span>⌁</span><small>Scanner</small></button>
   <button data-s="paper"><span>◫</span><small>Paper</small></button>
   <button data-s="system"><span>⚙</span><small>System</small></button>
 </nav>

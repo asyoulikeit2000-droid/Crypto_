@@ -1,0 +1,24 @@
+name: Verify feature branch
+
+on:
+  push:
+    branches:
+      - feature/pre-rally-scanner-v2
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --omit=dev
+      - run: node --check server.mjs
+      - run: node --check scanner/scoring.mjs
+      - run: node --check scanner/providers/dexscreener.mjs
+      - run: node --check scanner/service.mjs
+      - run: npm test

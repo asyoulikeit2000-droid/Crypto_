@@ -94,6 +94,7 @@ function render(){
   ].map(([k,v])=>`<div class="summary-card"><small>${k}</small><strong>${v}</strong></div>`).join("");
   $("#paperTable").innerHTML=paper.length?`<table><thead><tr><th>ASSET</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>PNL</th><th>OPENED</th><th>STATUS</th></tr></thead><tbody>${paper.map(r=>`<tr><td>${A(K(r,"symbol","asset_id"))}</td><td>${badge(K(r,"side","action"))}</td><td>${r.entry_price!=null?"$"+num(r.entry_price):"—"}</td><td>${r.exit_price!=null?"$"+num(r.exit_price):"—"}</td><td class="${Number(r.realized_pnl)>=0?"up":"down"}">${r.realized_pnl!=null?num(r.realized_pnl,4):"—"}</td><td>${r.opened_at?ago(r.opened_at):"—"}</td><td>${A(r.status)}</td></tr>`).join("")}</tbody></table>`:"<div class=\"empty\">No paper trade records yet.</div>";
   $("#quality").innerHTML=[["Trade stream",h.lastTrade],["Order book",h.lastBook],["Derivatives",h.lastDeriv]].map(x=>`<div class="card quality-card"><span class="eyebrow">${x[0]}</span><h2>${ago(x[1])}</h2><p class="muted">${A(x[1]||"No observation")}</p></div>`).join("");
+  renderScanner();
 }
 
 function tableSignals(rows){
@@ -117,3 +118,39 @@ $("#marketSort").onchange=e=>{marketSort=e.target.value;render()};
 loadDashboard();
 setInterval(()=>{if(!document.hidden)loadMarket()},2000);
 setInterval(()=>{if(!document.hidden)loadDashboard()},10000);
+
+function classLabel(v){return String(v||"neutral").replaceAll("_"," ").toUpperCase()}
+function renderScanner(){
+  const root=$("#scannerTable"); if(!root)return;
+  const s=D.preRally||{},rows=Array.isArray(s.tokens)?s.tokens:[];
+  $("#scannerStatus").innerHTML=s.enabled
+    ? `<b class="${s.lastError?"down":"up"}">${s.lastError?"DEGRADED":"ACTIVE"}</b> · provider ${A(s.provider)} · last success ${ago(s.lastSuccessAt)}${s.lastError?" · "+A(s.lastError):""}`
+    : '<b class="down">DISABLED</b> · set PRE_RALLY_SCANNER_ENABLED=true after schema migration is applied.';
+  const research=rows.filter(x=>x.classification==="research_candidate"||x.classification==="high_priority_watch").length;
+  const risky=rows.filter(x=>(x.criticalFlags||[]).length).length;
+  $("#scannerMetrics").innerHTML=[
+    ["Monitored",rows.length],["Research candidates",research],["Critical-risk",risky],["Last scan",ago(s.lastSuccessAt)]
+  ].map(([k,v])=>`<div class="summary-card"><small>${k}</small><strong>${v}</strong></div>`).join("");
+  root.innerHTML=rows.length?`<table><thead><tr><th>TOKEN</th><th>CHAIN</th><th>PRICE</th><th>LIQUIDITY</th><th>24H VOL</th><th>PRE-RALLY</th><th>CONF.</th><th>COVERAGE</th><th>CLASS</th><th>RISKS</th></tr></thead><tbody>${rows.map((r,i)=>`<tr class="scanner-row" data-scanner-index="${i}"><td><b>${A(r.tokenSymbol)}</b><br><small>${A(r.tokenName)}</small></td><td>${A(r.chainId)}</td><td>${r.priceUsd!=null?"$"+num(r.priceUsd):"—"}</td><td>${r.liquidityUsd!=null?"$"+num(r.liquidityUsd,0):"—"}</td><td>${r.volume24h!=null?"$"+num(r.volume24h,0):"—"}</td><td><b>${A(r.preRallyScore)}</b></td><td>${A(r.confidenceScore)}</td><td>${A(r.dataCoverageScore)}</td><td><span class="scanner-class ${r.classification}">${classLabel(r.classification)}</span></td><td>${(r.criticalFlags||[]).length+(r.warningFlags||[]).length}</td></tr>`).join("")}</tbody></table>`:'<div class="empty">No scanner candidates yet. This is expected until the worker completes its first discovery cycle.</div>';
+  $$(".scanner-row").forEach(x=>x.onclick=()=>showScannerDetail(rows[Number(x.dataset.scannerIndex)]));
+}
+function showScannerDetail(r){
+  if(!r)return;
+  $("#scannerDetail").innerHTML=`<article class="panel scanner-token-panel">
+    <div class="scanner-token-head"><div><span class="eyebrow">TOKEN RESEARCH</span><h3>${A(r.tokenName)} · ${A(r.tokenSymbol)}</h3><p class="muted">${A(r.chainId)} · ${A(r.tokenAddress)}</p></div><span class="scanner-class ${r.classification}">${classLabel(r.classification)}</span></div>
+    <div class="scanner-score-grid">
+      <div><small>Pre-Rally Score</small><strong>${A(r.preRallyScore)}/100</strong></div>
+      <div><small>Confidence</small><strong>${A(r.confidenceScore)}/100</strong></div>
+      <div><small>Data Coverage</small><strong>${A(r.dataCoverageScore)}/100</strong></div>
+    </div>
+    <p>${A(r.explanation)}</p>
+    <div class="scanner-breakdown"><div><b>Positive signals</b><p>${(r.positiveSignals||[]).map(A).join(" · ")||"Limited evidence"}</p></div><div><b>Warnings</b><p>${(r.warningFlags||[]).map(A).join(" · ")||"None detected from available data"}</p></div><div><b>Critical flags</b><p>${(r.criticalFlags||[]).map(A).join(" · ")||"None detected from available data"}</p></div><div><b>Missing data</b><p>${(r.missingData||[]).map(A).join(" · ")||"None"}</p></div></div>
+    <div class="scanner-disclaimer">This is an automated research signal based on market and blockchain data. It is not financial advice, does not guarantee future price movement, and may produce false positives.</div>
+  </article>`;
+  $("#scannerDetail").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+async function loadScanner(){
+  try{const r=await fetch("/api/pre-rally",{cache:"no-store"});if(r.ok){D.preRally=await r.json();renderScanner()}}catch{}
+}
+loadScanner();
+setInterval(()=>{if(!document.hidden)loadScanner()},30000);
