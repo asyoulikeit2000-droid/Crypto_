@@ -1,6 +1,9 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
-  "build": { "builder": "RAILPACK", "buildCommand": "npm install --omit=dev" },
+  "build": {
+    "builder": "RAILPACK",
+    "buildCommand": "npm install --omit=dev && npm run check:migration && npm test"
+  },
   "deploy": {
     "startCommand": "node server.mjs",
     "healthcheckPath": "/api/health",

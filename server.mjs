@@ -6,9 +6,8 @@ import { rankEligibleUniverse } from "./universe-engine.mjs";
 import { createIntelligenceEngine } from "./intelligence-engine.mjs";
 import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-gates.mjs";
 import { createPreRallyScanner } from "./scanner/service.mjs";
-import { createTursoCompat, tursoConfigured } from "./storage/compat.mjs";
-import { startArchiveLoop } from "./storage/archive-loop.mjs";
-import { createR2Archive, r2Configured } from "./storage/r2.mjs";
+import { createTursoCompat, tursoConfigured } from "./storage/turso-store.mjs";
+import { startRetentionLoop } from "./storage/retention.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -77,12 +76,11 @@ const state = {
   recentPaperTrades: [],
   killSwitch: false,
   archive: {
-    backend: "r2",
-    configured: r2Configured(),
-    enabled: String(process.env.R2_ARCHIVE_ENABLED || "false").toLowerCase() === "true",
-    verified: false,
-    lastError: null
+    backend: "cloudflare_r2",
+    mode: "relay_sampled_raw_market",
+    enabled: true
   },
+  retention: { enabled: false } ,
   calibration: { trainedAt: null, sampleCount: 0, globalProbability: null, byDirection: {}, status: "UNTRAINED" },
   validation: { status: "NOT_RUN" },
   lastTrainingAt: 0,
@@ -2181,6 +2179,7 @@ async function healthPayload() {
     storageBackend: "turso",
     archiveBackend: "r2",
     archive: state.archive,
+    retention: state.retention,
     paperOnly: true,
     executionEnabled: false,
     signalReady: productionSignalReady(),
@@ -2237,7 +2236,8 @@ async function serveStatic(pathname, res) {
 }
 
 const preRallyScanner = createPreRallyScanner({ db, log });
-const archiveRuntime = startArchiveLoop(primaryStore);
+const retentionRuntime = startRetentionLoop(primaryStore, log);
+state.retention = retentionRuntime;
 const PRE_RALLY_DISCLAIMER = "This is an automated research signal based on market and blockchain data. It is not financial advice, does not guarantee future price movement, and may produce false positives.";
 
 const server = http.createServer(async (req, res) => {
@@ -2305,17 +2305,6 @@ async function warmResearchState() {
 async function boot() {
   state.bootStage = "configuring";
   requireConfigured();
-  if (state.archive.configured && !state.archive.verified) {
-    try {
-      await createR2Archive().verifyWrite();
-      state.archive.verified = true;
-      state.archive.lastError = null;
-      log("r2_archive_verified", { enabled: state.archive.enabled });
-    } catch (e) {
-      state.archive.lastError = String(e?.message || e);
-      recordError(e, "r2_verify");
-    }
-  }
   await readKillSwitch();
   await ensureFeatureRegistry();
   await ensureModel();
@@ -2344,7 +2333,7 @@ async function boot() {
     marketRelay: "cloudflare",
     paperOnly: true,
     executionEnabled: false,
-    archiveVerified: state.archive.verified
+    archiveMode: state.archive.mode
   });
   log("engine_ready", {
     assets: state.assets.length,

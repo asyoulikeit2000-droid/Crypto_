@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "crypto-market-relay",
+  "main": "market-relay.js",
+  "compatibility_date": "2026-10-02",
+  "placement": {
+    "region": "aws:ap-southeast-1"
+  },
+  "r2_buckets": [
+    {
+      "binding": "ARCHIVE",
+      "bucket_name": "crypto-intelligence-archive"
+    }
+  ]
+}

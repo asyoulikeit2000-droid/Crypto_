@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 test("Turso storage preserves engine and scanner semantics", async (t) => {
   process.env.TURSO_DATABASE_URL = pathToFileURL(join(tmpdir(), "crypto-storage-" + process.pid + "-" + Date.now() + ".db")).href;
   process.env.TURSO_AUTH_TOKEN = "";
-  const mod = await import("../storage/compat.mjs?test=" + Date.now());
+  const mod = await import("../storage/turso-store.mjs?test=" + Date.now());
   const store = mod.createTursoCompat();
   t.after(() => store.client.close?.());
 

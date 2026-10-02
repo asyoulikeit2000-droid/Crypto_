@@ -20,13 +20,31 @@ async function getJson(path) {
   return data;
 }
 
+async function archiveSnapshot(bucket, payload) {
+  const d = new Date(payload.generatedAt || Date.now());
+  if (d.getUTCSeconds() >= 5) return;
+  const pad = n => String(n).padStart(2, "0");
+  const key =
+    "raw-market/bybit/" +
+    d.getUTCFullYear() + "/" + pad(d.getUTCMonth() + 1) + "/" + pad(d.getUTCDate()) + "/" +
+    pad(d.getUTCHours()) + "/" + pad(d.getUTCMinutes()) + ".json";
+  await bucket.put(key, JSON.stringify(payload), {
+    httpMetadata: { contentType: "application/json" },
+    customMetadata: {
+      source: "BYBIT_VIA_CLOUDFLARE",
+      generated_at: String(payload.generatedAt || ""),
+      ticker_count: String(payload.tickers?.length || 0)
+    }
+  });
+}
+
 async function safe(path, fallback, label, errors) {
   try { return await getJson(path); }
   catch (e) { errors.push({ label, error: String(e?.message || e).slice(0, 240) }); return fallback; }
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env, ctx) {
     try {
       if (request.method !== "GET") return json({ ok: false, error: "method_not_allowed" }, 405);
       const url = new URL(request.url);
@@ -71,11 +89,13 @@ export default {
         }))
       ]);
 
-      return json({
+      const payload = {
         ok: true, mode, source: "BYBIT_VIA_CLOUDFLARE", generatedAt: new Date().toISOString(),
         tickers, books, trades: tradesBySymbol.flat(), funding: fundingBySymbol.flat(),
         openInterest: oiBySymbol.flat(), klines, diagnostics: { errors }
-      });
+      };
+      if (env.ARCHIVE) ctx.waitUntil(archiveSnapshot(env.ARCHIVE, payload));
+      return json(payload);
     } catch (e) {
       return json({ ok: false, error: String(e?.message || e).slice(0, 500) }, 502);
     }
