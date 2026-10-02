@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { rankEligibleUniverse } from "./universe-engine.mjs";
 import { createIntelligenceEngine } from "./intelligence-engine.mjs";
 import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-gates.mjs";
-import { createPreRallyScanner } from "./scanner/service.mjs";\nimport { createTursoCompat, tursoConfigured } from "./storage/compat.mjs";
+import { createPreRallyScanner } from "./scanner/service.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -45,7 +45,7 @@ const UNIVERSE_REFRESH_MS = 10 * 60 * 1000;
 const HORIZON_RESEARCH_INTERVAL_MS = 2 * 60 * 1000;
 const VALIDATION_INTERVAL_MS = 10 * 60 * 1000;
 const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
-const QUALITY_INTERVAL_MS = 60 * 1000;\nconst PRIMARY_DB = (process.env.PRIMARY_DB || (tursoConfigured() ? "turso" : "supabase")).toLowerCase();\nconst tursoStore = PRIMARY_DB === "turso" && tursoConfigured() ? createTursoCompat() : null;
+const QUALITY_INTERVAL_MS = 60 * 1000;
 
 const state = {
   startedAt: new Date().toISOString(),
@@ -64,7 +64,7 @@ const state = {
   lastPipelineRun: null,
   lastMarketSuccessAt: null,
   lastSupabaseSuccessAt: null,
-  lastSupabaseFailureAt: null,\n  lastStorageSuccessAt: null,\n  lastStorageFailureAt: null,\n  primaryDb: PRIMARY_DB,
+  lastSupabaseFailureAt: null,
   lastQualityWrite: 0,
   lastSignalAt: new Map(),
   recentSignals: [],
@@ -111,16 +111,12 @@ function recordError(e, context = null) {
   console.error(JSON.stringify({ ts: iso(), error: message }));
 }
 function requireConfigured() {
-  if (PRIMARY_DB === "turso") {
-    if (!tursoStore) throw new Error("Turso credentials not configured");
-  } else if (!SB || !KEY) {
-    throw new Error("Supabase credentials not configured");
-  }
+  if (!SB || !KEY) throw new Error("Supabase credentials not configured");
   if (!RELAY_URL || !RELAY_KEY) throw new Error("Market relay not configured");
 }
 
-async function supabaseDb(table, method = "GET", params = {}, body, extraHeaders = {}) {
-  if (!SB || !KEY) throw new Error("Supabase credentials not configured");
+async function sb(table, method = "GET", params = {}, body, extraHeaders = {}) {
+  requireConfigured();
   const u = new URL(SB + "/rest/v1/" + table);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) u.searchParams.set(k, String(v));
@@ -131,29 +127,18 @@ async function supabaseDb(table, method = "GET", params = {}, body, extraHeaders
     headers["Content-Profile"] = SCHEMA;
     headers.Prefer = extraHeaders.Prefer || "return=minimal";
   }
-  const response = await fetch(u, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error("Supabase " + response.status + " " + text.slice(0, 800));
-  state.lastSupabaseSuccessAt = iso();
-  return text ? JSON.parse(text) : [];
-}
-
-async function sb(table, method = "GET", params = {}, body, extraHeaders = {}) {
-  requireConfigured();
   try {
-    const result = PRIMARY_DB === "turso"
-      ? await tursoStore.db(table, method, params, body, extraHeaders)
-      : await supabaseDb(table, method, params, body, extraHeaders);
-    state.lastStorageSuccessAt = iso();
-    if (PRIMARY_DB === "supabase") state.lastSupabaseSuccessAt = state.lastStorageSuccessAt;
-    return result;
+    const response = await fetch(u, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error("Supabase " + response.status + " " + text.slice(0, 800));
+    state.lastSupabaseSuccessAt = iso();
+    return text ? JSON.parse(text) : [];
   } catch (e) {
-    state.lastStorageFailureAt = iso();
-    if (PRIMARY_DB === "supabase") state.lastSupabaseFailureAt = state.lastStorageFailureAt;
+    state.lastSupabaseFailureAt = iso();
     throw e;
   }
 }
@@ -2145,15 +2130,15 @@ function healthReadiness() {
   const live = Boolean(state.lastTrade && now - Date.parse(state.lastTrade) < 20000);
   const bookLive = Boolean(state.lastBook && now - Date.parse(state.lastBook) < 20000);
   const universeReady = state.assets.length >= 5 && Boolean(state.lastUniverseRefresh);
-  const storageSuccessMs = state.lastStorageSuccessAt ? Date.parse(state.lastStorageSuccessAt) : 0;
-  const storageFailureMs = state.lastStorageFailureAt ? Date.parse(state.lastStorageFailureAt) : 0;
-  const storageLive = Boolean(
-    storageSuccessMs &&
-    now - storageSuccessMs < 60000 &&
-    storageSuccessMs >= storageFailureMs
+  const supabaseSuccessMs = state.lastSupabaseSuccessAt ? Date.parse(state.lastSupabaseSuccessAt) : 0;
+  const supabaseFailureMs = state.lastSupabaseFailureAt ? Date.parse(state.lastSupabaseFailureAt) : 0;
+  const supabaseLive = Boolean(
+    supabaseSuccessMs &&
+    now - supabaseSuccessMs < 60000 &&
+    supabaseSuccessMs >= supabaseFailureMs
   );
-  const ready = state.ready && universeReady && live && bookLive && storageLive && !state.killSwitch;
-  return { ready, live, bookLive, universeReady, storageLive };
+  const ready = state.ready && universeReady && live && bookLive && supabaseLive && !state.killSwitch;
+  return { ready, live, bookLive, universeReady, supabaseLive };
 }
 
 async function healthPayload() {
@@ -2166,7 +2151,7 @@ async function healthPayload() {
       universe: readiness.universeReady,
       tradeStream: readiness.live,
       orderbookStream: readiness.bookLive,
-      storage: readiness.storageLive,\n      primaryDb: PRIMARY_DB
+      supabase: readiness.supabaseLive
     },
     bootStage: state.bootStage,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
@@ -2181,7 +2166,7 @@ async function healthPayload() {
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
     lastMarketSuccessAt: state.lastMarketSuccessAt,
-    primaryDb: PRIMARY_DB,\n    lastStorageSuccessAt: state.lastStorageSuccessAt,\n    lastStorageFailureAt: state.lastStorageFailureAt,\n    lastSupabaseSuccessAt: state.lastSupabaseSuccessAt,
+    lastSupabaseSuccessAt: state.lastSupabaseSuccessAt,
     lastSupabaseFailureAt: state.lastSupabaseFailureAt,
     assets: state.assets.length,
     counts: state.counts,
@@ -2305,12 +2290,12 @@ async function boot() {
   await pollMarketData();
 
   const readiness = healthReadiness();
-  if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.storageLive) {
+  if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.supabaseLive) {
     throw new Error(
       "Production readiness gate failed: universe=" + readiness.universeReady +
       ", trade=" + readiness.live +
       ", orderbook=" + readiness.bookLive +
-      ", storage=" + readiness.storageLive
+      ", supabase=" + readiness.supabaseLive
     );
   }
 
@@ -2322,9 +2307,9 @@ async function boot() {
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
-    primaryDb: PRIMARY_DB,\n    storageLive: readiness.storageLive
+    supabaseLive: readiness.supabaseLive
   });
-  if (PRIMARY_DB === "turso") await tursoStore.markHealth("runtime","READY",{ assets:state.assets.length, paperOnly:true, executionEnabled:false });\n  await writeSystemEvent("ENGINE_READY", "info", "runtime", "Crypto Intelligence Engine ready", {
+  await writeSystemEvent("ENGINE_READY", "info", "runtime", "Crypto Intelligence Engine ready", {
     assets: state.assets.length,
     feature_version: FEATURE_VERSION,
     model_id: MODEL_ID
