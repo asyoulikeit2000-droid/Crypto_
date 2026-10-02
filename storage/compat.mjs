@@ -47,6 +47,23 @@ function matches(row, key, expr) {
   return true;
 }
 
+const generatedIdFields = {
+  universe_snapshots: "snapshot_id",
+  signals: "signal_id",
+  backtest_runs: "run_id",
+  paper_trades: "paper_trade_id",
+  model_calibrations: "calibration_id",
+  system_events: "event_id",
+  audit_logs: "audit_id",
+  model_predictions: "prediction_id"
+};
+
+function withGeneratedId(table, row) {
+  const field = generatedIdFields[table];
+  if (!field || row?.[field]) return row;
+  return { ...row, [field]: randomUUID() };
+}
+
 function project(row, select) {
   if (!select || select === "*") return row;
   const cols = String(select).split(",").map(x => x.trim()).filter(x => x && !x.includes("("));
@@ -129,14 +146,14 @@ export function createTursoCompat() {
       const out = [];
       for (const input of rows) {
         if (!input) continue;
-        const key = stableKey(table, input, conflict);
-        let next = input;
+        let next = withGeneratedId(table, input);
+        const key = stableKey(table, next, conflict);
         if (merge) {
           const existing = await client.execute({
             sql:"SELECT payload_json FROM kv_rows WHERE table_name=? AND row_key=? LIMIT 1",
             args:[table,key]
           });
-          if (existing.rows.length) next = { ...JSON.parse(String(existing.rows[0].payload_json)), ...input };
+          if (existing.rows.length) next = { ...JSON.parse(String(existing.rows[0].payload_json)), ...next };
         }
         await client.execute({
           sql:`INSERT INTO kv_rows(table_name,row_key,created_at,updated_at,payload_json)
