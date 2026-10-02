@@ -94,8 +94,30 @@ export function createTursoCompat() {
   if (!tursoConfigured()) throw new Error("Turso credentials not configured");
   const client = createClient(url.startsWith("file:") ? { url } : { url, authToken });
 
+  function isTransientStorageError(error) {
+    const message = String(error?.message || error || "");
+    return /\b502\b|SERVER_ERROR|fetch failed|ECONNRESET|ETIMEDOUT|temporar/i.test(message);
+  }
+
+  async function withStorageRetry(operation, attempts = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (!isTransientStorageError(error) || attempt === attempts) throw error;
+        await new Promise(resolve => setTimeout(resolve, 200 * attempt));
+      }
+    }
+    throw lastError;
+  }
+
+  const execute = statement => withStorageRetry(() => client.execute(statement));
+  const batch = (statements, mode) => withStorageRetry(() => client.batch(statements, mode));
+
   async function initialize() {
-    await client.batch([
+    await batch([
       `CREATE TABLE IF NOT EXISTS kv_rows (
         table_name TEXT NOT NULL,
         row_key TEXT NOT NULL,
@@ -142,7 +164,7 @@ export function createTursoCompat() {
   }
 
   async function healthcheck() {
-    const r = await client.execute("select 1 as ok");
+    const r = await execute("select 1 as ok");
     return Number(r.rows?.[0]?.ok || 0) === 1;
   }
 
@@ -198,7 +220,7 @@ export function createTursoCompat() {
 
   async function queryEntries(table, params = {}) {
     const q = buildQuery(table, params);
-    const r = await client.execute(q);
+    const r = await execute(q);
     return r.rows.map(x => ({ rowKey: String(x.row_key), row: JSON.parse(String(x.payload_json)) }));
   }
 
@@ -223,7 +245,7 @@ export function createTursoCompat() {
       });
 
       if (!returning && !merge && prepared.length > 1) {
-        await client.batch(prepared.map(({next,key}) => ({
+        await batch(prepared.map(({next,key}) => ({
           sql: ignore
             ? "INSERT OR IGNORE INTO kv_rows(table_name,row_key,created_at,updated_at,payload_json) VALUES(?,?,?,?,?)"
             : "INSERT INTO kv_rows(table_name,row_key,created_at,updated_at,payload_json) VALUES(?,?,?,?,?) ON CONFLICT(table_name,row_key) DO UPDATE SET updated_at=excluded.updated_at,payload_json=excluded.payload_json",
@@ -237,13 +259,13 @@ export function createTursoCompat() {
         let next = item.next;
         const key = item.key;
         if (merge) {
-          const existing = await client.execute({
+          const existing = await execute({
             sql: "SELECT payload_json FROM kv_rows WHERE table_name=? AND row_key=? LIMIT 1",
             args: [table,key]
           });
           if (existing.rows.length) next = { ...JSON.parse(String(existing.rows[0].payload_json)), ...next };
         }
-        const result = await client.execute({
+        const result = await execute({
           sql: ignore
             ? "INSERT OR IGNORE INTO kv_rows(table_name,row_key,created_at,updated_at,payload_json) VALUES(?,?,?,?,?)"
             : "INSERT INTO kv_rows(table_name,row_key,created_at,updated_at,payload_json) VALUES(?,?,?,?,?) ON CONFLICT(table_name,row_key) DO UPDATE SET updated_at=excluded.updated_at,payload_json=excluded.payload_json",
@@ -259,7 +281,7 @@ export function createTursoCompat() {
       const out = [];
       for (const item of entries) {
         const next = { ...item.row, ...(body || {}) };
-        await client.execute({
+        await execute({
           sql: "UPDATE kv_rows SET updated_at=?,payload_json=? WHERE table_name=? AND row_key=?",
           args: [now,JSON.stringify(next),table,item.rowKey]
         });
@@ -271,7 +293,7 @@ export function createTursoCompat() {
     if (method === "DELETE") {
       const entries = await queryEntries(table, { ...params, limit: params.limit || 10000 });
       if (entries.length) {
-        await client.batch(entries.map(item => ({
+        await batch(entries.map(item => ({
           sql: "DELETE FROM kv_rows WHERE table_name=? AND row_key=?",
           args: [table,item.rowKey]
         })), "write");
@@ -283,7 +305,7 @@ export function createTursoCompat() {
   }
 
   async function markHealth(component,status,metadata={}) {
-    await client.execute({
+    await execute({
       sql: `INSERT INTO runtime_health(component,status,checked_at,metadata_json)
             VALUES(?,?,?,?)
             ON CONFLICT(component) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,metadata_json=excluded.metadata_json`,
