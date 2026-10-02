@@ -15,6 +15,7 @@ jobs:
         with:
           node-version: 22
 - run: npm install --omit=dev
+      - run: npm run check:migration
       - run: node --check server.mjs
       - run: node --check intelligence-engine.mjs
       - run: node --check universe-engine.mjs
