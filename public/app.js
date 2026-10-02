@@ -3,7 +3,9 @@ const $=s=>document.querySelector(s),$$=s=>Array.from(document.querySelectorAll(
 const A=x=>String(x??"—"),num=(x,d=6)=>{const n=Number(x);return Number.isFinite(n)?n.toLocaleString(undefined,{maximumFractionDigits:d}):"—"};
 const pct=x=>{const n=Number(x);return Number.isFinite(n)?`${n>=0?"+":""}${(n*100).toFixed(2)}%`:"—"};
 const K=(o,...ks)=>{for(const k of ks)if(o?.[k]!=null)return o[k];return null};
-const ago=x=>x?`${Math.max(0,Math.round((Date.now()-Date.parse(x))/1000))}s ago`:"—";
+const ageMs=x=>x?Math.max(0,Date.now()-Date.parse(x)):Infinity;
+const ago=x=>{if(!x)return "—";const s=Math.round(ageMs(x)/1000);if(s<60)return `${s}s ago`;const m=Math.round(s/60);if(m<60)return `${m}m ago`;const h=Math.round(m/60);return `${h}h ago`};
+const freshness=(x,freshMs=20000,warnMs=60000)=>{const ms=ageMs(x);return ms<=freshMs?{label:"LIVE",cls:"fresh"}:ms<=warnMs?{label:"DELAYED",cls:"warn"}:{label:"STALE",cls:"stale"}};
 const badge=x=>{const v=String(x||"NO TRADE").toUpperCase(),c=v==="LONG"?"long":v==="SHORT"?"short":"none";return `<span class="badge ${c}">${A(v)}</span>`};
 const gate=(ok,label,detail)=>`<div class="gate ${ok?"pass":"wait"}"><i>${ok?"✓":"•"}</i><div><b>${label}</b><small>${detail}</small></div></div>`;
 
@@ -40,13 +42,15 @@ function render(){
   $("#books").textContent=(h.counts?.books||0).toLocaleString();
   $("#outcomesMetric").textContent=(cal.sampleCount||0).toLocaleString();
   $("#errors").textContent=(h.errors||[]).join("\n")||"None";
-  const h1=hz.H1||{},h4=hz.H4||{},d1=hz.D1||{};
+  const h1=hz.H1||{},h4=hz.H4||{},d1=hz.D1||{},mtf=hz.MTF||{};
   $("#h1State").textContent=A(h1.state||"VALIDATING");
   $("#h1Copy").textContent=`H1 evidence outcomes: ${A(h1.outcomes)} · actionable only after all model gates pass.`;
   $("#h4State").textContent=A(h4.state||"DATA_WARMING").replaceAll("_"," ");
   const h4t=h4.validation?.test||{}; $("#h4Copy").textContent=`${A(h4.readyAssets)} assets ready · ${A(h4.candidates)} candidates · ${A(h4.outcomes)} outcomes · OOS n=${A(h4t.n)} · avg ${num(h4t.avgPnl,4)} · total ${num(h4t.totalPnl,4)}`;
   $("#d1State").textContent=A(d1.state||"DATA_WARMING").replaceAll("_"," ");
   const d1t=d1.validation?.test||{}; $("#d1Copy").textContent=`${A(d1.readyAssets)} assets ready · ${A(d1.candidates)} candidates · ${A(d1.outcomes)} outcomes · OOS n=${A(d1t.n)} · avg ${num(d1t.avgPnl,4)} · total ${num(d1t.totalPnl,4)}`;
+  $("#mtfState").textContent=A(mtf.state||"DATA_WARMING").replaceAll("_"," ");
+  const mtft=mtf.validation?.test||{}; $("#mtfCopy").textContent=`${A(mtf.readyAssets)} assets ready · ${A(mtf.candidates)} candidates · ${A(mtf.outcomes)} outcomes · OOS n=${A(mtft.n)} · avg ${num(mtft.avgPnl,4)}`;
 
   const checks=[
     [cal.status==="ACTIVE","Calibration","ACTIVE required"],
@@ -62,15 +66,15 @@ function render(){
   $("#gateGrid").innerHTML=checks.map(x=>gate(...x)).join("");
   $("#gateScore").textContent=`${passed} / ${checks.length} gates`;
   $("#gateBar").style.width=`${Math.round(passed/checks.length*100)}%`;
-  $("#validationStats").textContent=`Test n=${A(test.n)} · win rate ${test.winRate!=null?num(Number(test.winRate)*100,1)+"%":"—"} · avg PnL ${num(test.avgPnl,4)} · total PnL ${num(test.totalPnl,4)} · calibration ${A(cal.status)}`;
+  $("#validationStats").textContent=`Current cohort from ${h.validationCohortStart?new Date(h.validationCohortStart).toLocaleString():"—"} · Test n=${A(test.n)} · win rate ${test.winRate!=null?num(Number(test.winRate)*100,1)+"%":"—"} · avg PnL ${num(test.avgPnl,4)} · total PnL ${num(test.totalPnl,4)} · calibration ${A(cal.status)}`;
 
   const market=filteredMarket();
-  $("#liveMarket").innerHTML=market.length?market.slice(0,30).map(a=>`<article class="market-card">
-    <div class="market-top"><b>${A(a.symbol)}</b><span>#${A(a.rank)} · ${ago(a.updatedAt)}</span></div>
+  $("#liveMarket").innerHTML=market.length?market.slice(0,30).map(a=>{const f=freshness(a.updatedAt);return `<article class="market-card">
+    <div class="market-top"><b>${A(a.symbol)}</b><span>#${A(a.rank)} · <i class="fresh-chip ${f.cls}">${f.label}</i> ${ago(a.updatedAt)}</span></div>
     <strong>$${num(a.price)}</strong>
     <div class="market-line"><span class="${Number(a.change24h)>=0?"up":"down"}">${pct(a.change24h)}</span><span class="muted">Vol ${num(a.volume24h,0)}</span></div>
     <div class="mini"><span>H $${num(a.high24h)}</span><span>L $${num(a.low24h)}</span><span>Spr ${num(a.spreadBps,2)} bps</span></div>
-  </article>`).join(""):"<div class=\"empty\">No assets match this filter.</div>";
+  </article>`}).join(""):"<div class=\"empty\">No assets match this filter.</div>";
 
   $("#universe").innerHTML=market.slice(0,10).map((a,i)=>`<div class="row"><span class="rank">${String(i+1).padStart(2,"0")}</span><b>${A(a.symbol)}</b><span>$${num(a.price)}</span><span class="${Number(a.change24h)>=0?"up":"down"}">${pct(a.change24h)}</span></div>`).join("")||"<div class=\"empty\">Universe unavailable.</div>";
   $("#providers").innerHTML=(D.providers||[]).slice(0,8).map(p=>`<div class="provider-row"><div><b>${A(p.provider)}</b><small>${A(p.dataset)}</small></div><span class="provider-status ${String(p.status).toLowerCase()}">${A(p.status)}</span><span class="muted">${ago(p.checked_at)}</span></div>`).join("")||"<div class=\"empty\">No provider status.</div>";
@@ -81,7 +85,7 @@ function render(){
 
   $("#signalNotice").innerHTML=signalReady?`<b class="up">H1 production-actionable.</b> ${actionable.length} qualified H1 record(s) shown; H4/D1 remain shadow-only.`:(statReady?'<b class="down">H1 robustness locked.</b> Base validation passed, but time-slice robustness is insufficient; records remain research-only.':'<b class="down">Shadow mode.</b> These are research records, not approved entries.');
   $("#signalTable").innerHTML=tableSignals(sig);
-  $("#marketTable").innerHTML=market.length?`<table><thead><tr><th>#</th><th>ASSET</th><th>PRICE</th><th>24H</th><th>VOLUME</th><th>SPREAD</th><th>FRESH</th></tr></thead><tbody>${market.map((a,i)=>`<tr><td>${i+1}</td><td><b>${A(a.symbol)}</b></td><td>$${num(a.price)}</td><td class="${Number(a.change24h)>=0?"up":"down"}">${pct(a.change24h)}</td><td>${num(a.volume24h,0)}</td><td>${num(a.spreadBps,2)} bps</td><td>${ago(a.updatedAt)}</td></tr>`).join("")}</tbody></table>`:"<div class=\"empty\">Universe unavailable.</div>";
+  $("#marketTable").innerHTML=market.length?`<table><thead><tr><th>#</th><th>ASSET</th><th>PRICE</th><th>24H</th><th>VOLUME</th><th>SPREAD</th><th>FRESH</th></tr></thead><tbody>${market.map((a,i)=>`<tr><td>${i+1}</td><td><b>${A(a.symbol)}</b></td><td>$${num(a.price)}</td><td class="${Number(a.change24h)>=0?"up":"down"}">${pct(a.change24h)}</td><td>${num(a.volume24h,0)}</td><td>${num(a.spreadBps,2)} bps</td><td><span class="fresh-chip ${freshness(a.updatedAt).cls}">${freshness(a.updatedAt).label}</span> ${ago(a.updatedAt)}</td></tr>`).join("")}</tbody></table>`:"<div class=\"empty\">Universe unavailable.</div>";
 
   const paper=D.paperTrades||[];
   const closed=paper.filter(x=>x.status&&String(x.status).toUpperCase()!=="OPEN");
@@ -93,7 +97,13 @@ function render(){
     ["Total PnL",num(total,4)]
   ].map(([k,v])=>`<div class="summary-card"><small>${k}</small><strong>${v}</strong></div>`).join("");
   $("#paperTable").innerHTML=paper.length?`<table><thead><tr><th>ASSET</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>PNL</th><th>OPENED</th><th>STATUS</th></tr></thead><tbody>${paper.map(r=>`<tr><td>${A(K(r,"symbol","asset_id"))}</td><td>${badge(K(r,"side","action"))}</td><td>${r.entry_price!=null?"$"+num(r.entry_price):"—"}</td><td>${r.exit_price!=null?"$"+num(r.exit_price):"—"}</td><td class="${Number(r.realized_pnl)>=0?"up":"down"}">${r.realized_pnl!=null?num(r.realized_pnl,4):"—"}</td><td>${r.opened_at?ago(r.opened_at):"—"}</td><td>${A(r.status)}</td></tr>`).join("")}</tbody></table>`:"<div class=\"empty\">No paper trade records yet.</div>";
-  $("#quality").innerHTML=[["Trade stream",h.lastTrade],["Order book",h.lastBook],["Derivatives",h.lastDeriv]].map(x=>`<div class="card quality-card"><span class="eyebrow">${x[0]}</span><h2>${ago(x[1])}</h2><p class="muted">${A(x[1]||"No observation")}</p></div>`).join("");
+  const qualityItems=[
+    ["Trade feed",h.lastTrade,20000,60000,"Last accepted trade event"],
+    ["Order book",h.lastBook,20000,60000,"Last valid book snapshot"],
+    ["Derivatives receive",h.lastDerivReceivedAt,60000,180000,`Funding/OI received now · source event ${ago(h.lastDeriv)}`],
+    ["Turso persistence",h.lastStorageSuccessAt,60000,180000,"Last successful operational DB write"]
+  ];
+  $("#quality").innerHTML=qualityItems.map(x=>{const f=freshness(x[1],x[2],x[3]);return `<div class="card quality-card"><span class="eyebrow">${x[0]}</span><div class="quality-title"><h2>${ago(x[1])}</h2><span class="fresh-chip ${f.cls}">${f.label}</span></div><p class="muted">${x[4]}</p><p class="muted mono">${A(x[1]||"No observation")}</p></div>`}).join("");
   renderScanner();
 }
 
@@ -125,7 +135,7 @@ function renderScanner(){
   const s=D.preRally||{},rows=Array.isArray(s.tokens)?s.tokens:[];
   $("#scannerStatus").innerHTML=s.enabled
     ? `<b class="${s.lastError?"down":"up"}">${s.lastError?"DEGRADED":"ACTIVE"}</b> · provider ${A(s.provider)} · last success ${ago(s.lastSuccessAt)}${s.lastError?" · "+A(s.lastError):""}`
-    : '<b class="down">DISABLED</b> · set PRE_RALLY_SCANNER_ENABLED=true after schema migration is applied.';
+    : '<b class="down">DISABLED</b> · scanner is administratively disabled.';
   const research=rows.filter(x=>x.classification==="research_candidate"||x.classification==="high_priority_watch").length;
   const risky=rows.filter(x=>(x.criticalFlags||[]).length).length;
   $("#scannerMetrics").innerHTML=[

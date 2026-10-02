@@ -51,6 +51,7 @@ const HORIZON_RESEARCH_INTERVAL_MS = 2 * 60 * 1000;
 const VALIDATION_INTERVAL_MS = 10 * 60 * 1000;
 const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
 const QUALITY_INTERVAL_MS = 60 * 1000;
+const VALIDATION_COHORT_START = process.env.VALIDATION_COHORT_START || "1970-01-01T00:00:00.000Z";
 
 const state = {
   startedAt: new Date().toISOString(),
@@ -59,6 +60,7 @@ const state = {
   lastTrade: null,
   lastBook: null,
   lastDeriv: null,
+  lastDerivReceivedAt: null,
   assets: [],
   errors: [],
   counts: { trades: 0, books: 0, derivatives: 0, ticks: 0, features: 0, signals: 0, paperTrades: 0 },
@@ -293,9 +295,10 @@ async function trainCalibration(force = false) {
     }
 
     const signals = await db("signals", "GET", {
-      select: "signal_id,signal,p_t1,expected_value,model_id",
+      select: "signal_id,signal,p_t1,expected_value,model_id,created_at",
       signal_id: "in.(" + ids.join(",") + ")",
       model_id: "eq." + MODEL_ID,
+      created_at: "gte." + VALIDATION_COHORT_START,
       limit: "5000"
     });
     const byId = new Map(signals.map(x => [x.signal_id, x]));
@@ -343,7 +346,8 @@ async function trainCalibration(force = false) {
       rawWinRate: used ? wins / used : null,
       brierScore: used ? brier / used : null,
       bins,
-      status: calibrationActive ? "ACTIVE" : (used >= 50 ? "EDGE_NOT_CONFIRMED" : "WARMING")
+      status: calibrationActive ? "ACTIVE" : (used >= 50 ? "EDGE_NOT_CONFIRMED" : "WARMING"),
+      cohortStart: VALIDATION_COHORT_START
     };
 
     await db("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
@@ -386,8 +390,9 @@ async function trainCalibration(force = false) {
 async function runWalkForwardValidation() {
   try {
     const modelSignals = await db("signals", "GET", {
-      select: "signal_id",
+      select: "signal_id,created_at",
       model_id: "eq." + MODEL_ID,
+      created_at: "gte." + VALIDATION_COHORT_START,
       limit: "5000"
     });
     const modelSignalIds = new Set(modelSignals.map(x => x.signal_id));
@@ -400,7 +405,7 @@ async function runWalkForwardValidation() {
       (x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS))
     );
     if (usable.length < 20) {
-      state.validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: usable.length };
+      state.validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: usable.length, cohortStart: VALIDATION_COHORT_START };
       return state.validation;
     }
     const split = Math.max(10, Math.floor(usable.length * 0.70));
@@ -443,7 +448,8 @@ async function runWalkForwardValidation() {
       split: { train: train.length, test: test.length, method: "chronological_70_30" },
       train: metrics(train),
       test: metrics(test),
-      robustness
+      robustness,
+      cohortStart: VALIDATION_COHORT_START
     };
     const run = await db("backtest_runs", "POST", {}, {
       started_at: iso(),
@@ -673,6 +679,7 @@ async function evaluateHorizonModel(modelId) {
     const signals = await db("signals", "GET", {
       select: "signal_id,signal,p_t1,created_at",
       model_id: "eq." + modelId,
+      created_at: "gte." + VALIDATION_COHORT_START,
       order: "created_at.asc",
       limit: "5000"
     });
@@ -2014,6 +2021,7 @@ async function pollMarketData() {
           await insertRows("funding", [row], "asset_id,exchange,observed_at", "ignore");
           state.counts.derivatives++;
           state.lastDeriv = row.observed_at;
+          state.lastDerivReceivedAt = iso();
         } catch (e) {
           recordError(e, "funding");
         }
@@ -2120,11 +2128,13 @@ async function dashboardPayload() {
   });
   const paperTrades = await db("paper_trades", "GET", {
     select: "paper_trade_id,signal_id,opened_at,closed_at,side,entry_price,exit_price,quantity,realized_pnl,status,metadata",
+    opened_at: "gte." + VALIDATION_COHORT_START,
     order: "opened_at.desc",
     limit: "30"
   });
   const dbSignals = await db("signals", "GET", {
     select: "signal_id,asset_id,created_at,horizon,signal,entry,stop_loss,target_1,target_2,target_3,p_t1,p_t2,p_t3,expected_value,risk_state,data_quality,model_id,feature_version,reasons",
+    created_at: "gte." + VALIDATION_COHORT_START,
     order: "created_at.desc",
     limit: "30"
   });
@@ -2137,6 +2147,8 @@ async function dashboardPayload() {
       lastTrade: state.lastTrade,
       lastBook: state.lastBook,
       lastDeriv: state.lastDeriv,
+      lastDerivReceivedAt: state.lastDerivReceivedAt,
+      validationCohortStart: VALIDATION_COHORT_START,
       lastUniverseRefresh: state.lastUniverseRefresh,
       lastPipelineRun: state.lastPipelineRun,
       assets: state.assets.length,
@@ -2235,6 +2247,8 @@ async function healthPayload() {
     lastTrade: state.lastTrade,
     lastBook: state.lastBook,
     lastDeriv: state.lastDeriv,
+    lastDerivReceivedAt: state.lastDerivReceivedAt,
+    validationCohortStart: VALIDATION_COHORT_START,
     lastUniverseRefresh: state.lastUniverseRefresh,
     lastPipelineRun: state.lastPipelineRun,
     calibration: state.calibration,
