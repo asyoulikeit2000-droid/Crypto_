@@ -23,6 +23,8 @@ export async function tokenPairs(chainId,tokenAddress){
 export function normalizePair(pair,now=Date.now()){
   const tx=pair?.txns||{},vol=pair?.volume||{},chg=pair?.priceChange||{};
   const created=Number(pair?.pairCreatedAt||0);
+  const requestedNow=Number(now);
+  const nowMs=Number.isFinite(requestedNow)&&requestedNow>1e12?requestedNow:Date.now();
   return {
     provider:"DEXSCREENER",chainId:pair?.chainId||null,pairAddress:pair?.pairAddress||null,dexName:pair?.dexId||null,
     tokenAddress:pair?.baseToken?.address||null,tokenName:pair?.baseToken?.name||null,tokenSymbol:pair?.baseToken?.symbol||null,
@@ -31,7 +33,7 @@ export function normalizePair(pair,now=Date.now()){
     volume1h:Number(vol.h1)||null,volume6h:Number(vol.h6)||null,volume24h:Number(vol.h24)||null,
     buys1h:Number(tx.h1?.buys)||null,sells1h:Number(tx.h1?.sells)||null,buys24h:Number(tx.h24?.buys)||null,sells24h:Number(tx.h24?.sells)||null,
     priceChange1h:Number(chg.h1)||null,priceChange6h:Number(chg.h6)||null,priceChange24h:Number(chg.h24)||null,
-    pairCreatedAt:created?new Date(created).toISOString():null,pairAgeHours:created?(now-created)/36e5:null,
+    pairCreatedAt:created?new Date(created).toISOString():null,pairAgeHours:created?Math.max(0,(nowMs-created)/36e5):null,
     imageUrl:pair?.info?.imageUrl||null,websites:pair?.info?.websites||[],socials:pair?.info?.socials||[],
     sourceTimestamp:null,sourceAgeSec:null,providerCount:1,raw:pair
   };

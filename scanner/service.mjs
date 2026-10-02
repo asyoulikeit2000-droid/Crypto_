@@ -80,7 +80,7 @@ export function createPreRallyScanner({db,log=console.log}={}){
       for(const c of [...candidates.values()].slice(0,maxTokens)){
         try{
           const pairs=await tokenPairs(c.chainId,c.tokenAddress);
-          const normalized=(Array.isArray(pairs)?pairs:[]).map(normalizePair).filter(x=>x.tokenAddress===c.tokenAddress);
+          const normalized=(Array.isArray(pairs)?pairs:[]).map(x=>normalizePair(x)).filter(x=>x.tokenAddress===c.tokenAddress);
           normalized.sort((a,b)=>(b.liquidityUsd||0)-(a.liquidityUsd||0));
           const row=normalized[0]; if(!row)continue;
           const score=evaluatePreRally(row);
