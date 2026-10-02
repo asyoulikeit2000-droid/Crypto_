@@ -14,8 +14,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm install --omit=dev
+- run: npm install --omit=dev
       - run: node --check server.mjs
       - run: node --check intelligence-engine.mjs
       - run: node --check universe-engine.mjs
