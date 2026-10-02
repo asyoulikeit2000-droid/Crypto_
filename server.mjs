@@ -6,15 +6,21 @@ import { rankEligibleUniverse } from "./universe-engine.mjs";
 import { createIntelligenceEngine } from "./intelligence-engine.mjs";
 import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-gates.mjs";
 import { createPreRallyScanner } from "./scanner/service.mjs";
+import { createTursoCompat, tursoConfigured } from "./storage/compat.mjs";
+import { startArchiveLoop } from "./storage/archive-loop.mjs";
+import { createR2Archive, r2Configured } from "./storage/r2.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
-const SB = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
-const KEY = process.env.SUPABASE_SECRET_KEY || "";
-const SCHEMA = process.env.SUPABASE_DB_SCHEMA || "engine";
-const RELAY_URL = process.env.MARKET_RELAY_URL || (SB ? SB + "/functions/v1/market-data-relay" : "");
+const RELAY_URL = process.env.MARKET_RELAY_URL || "";
 const RELAY_KEY = process.env.MARKET_RELAY_KEY || "";
+
+if (!tursoConfigured()) throw new Error("Turso credentials not configured");
+const primaryStore = createTursoCompat();
+await primaryStore.initialize();
+if (!(await primaryStore.healthcheck())) throw new Error("Turso healthcheck failed");
+await primaryStore.markHealth("runtime", "BOOTING", { paperOnly: true, executionEnabled: false });
 const FEATURE_VERSION = "v2.1";
 const MODEL_ID = "rules_v3_selective";
 const H4_MODEL_ID = "rules_h4_swing_selective_v2";
@@ -63,13 +69,20 @@ const state = {
   lastUniverseRefresh: null,
   lastPipelineRun: null,
   lastMarketSuccessAt: null,
-  lastSupabaseSuccessAt: null,
-  lastSupabaseFailureAt: null,
+  lastStorageSuccessAt: null,
+  lastStorageFailureAt: null,
   lastQualityWrite: 0,
   lastSignalAt: new Map(),
   recentSignals: [],
   recentPaperTrades: [],
   killSwitch: false,
+  archive: {
+    backend: "r2",
+    configured: r2Configured(),
+    enabled: String(process.env.R2_ARCHIVE_ENABLED || "false").toLowerCase() === "true",
+    verified: false,
+    lastError: null
+  },
   calibration: { trainedAt: null, sampleCount: 0, globalProbability: null, byDirection: {}, status: "UNTRAINED" },
   validation: { status: "NOT_RUN" },
   lastTrainingAt: 0,
@@ -111,34 +124,18 @@ function recordError(e, context = null) {
   console.error(JSON.stringify({ ts: iso(), error: message }));
 }
 function requireConfigured() {
-  if (!SB || !KEY) throw new Error("Supabase credentials not configured");
-  if (!RELAY_URL || !RELAY_KEY) throw new Error("Market relay not configured");
+  if (!tursoConfigured()) throw new Error("Turso credentials not configured");
+  if (!RELAY_URL) throw new Error("Market relay not configured");
 }
 
-async function sb(table, method = "GET", params = {}, body, extraHeaders = {}) {
+async function db(table, method = "GET", params = {}, body, extraHeaders = {}) {
   requireConfigured();
-  const u = new URL(SB + "/rest/v1/" + table);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null) u.searchParams.set(k, String(v));
-  }
-  const headers = { apikey: KEY, "Accept-Profile": SCHEMA };
-  if (method !== "GET") {
-    headers["Content-Type"] = "application/json";
-    headers["Content-Profile"] = SCHEMA;
-    headers.Prefer = extraHeaders.Prefer || "return=minimal";
-  }
   try {
-    const response = await fetch(u, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body)
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error("Supabase " + response.status + " " + text.slice(0, 800));
-    state.lastSupabaseSuccessAt = iso();
-    return text ? JSON.parse(text) : [];
+    const result = await primaryStore.db(table, method, params, body, extraHeaders);
+    state.lastStorageSuccessAt = iso();
+    return result;
   } catch (e) {
-    state.lastSupabaseFailureAt = iso();
+    state.lastStorageFailureAt = iso();
     throw e;
   }
 }
@@ -148,7 +145,7 @@ async function insertRows(table, rows, onConflict = null, mode = "ignore", repre
   const params = onConflict ? { on_conflict: onConflict } : {};
   const resolution = mode === "merge" ? "resolution=merge-duplicates" : "resolution=ignore-duplicates";
   params.Prefer = undefined;
-  return sb(
+  return db(
     table,
     "POST",
     params,
@@ -162,12 +159,9 @@ async function relayJson(mode, symbols = []) {
   const u = new URL(RELAY_URL);
   u.searchParams.set("mode", mode);
   if (symbols.length) u.searchParams.set("symbols", symbols.join(","));
-  const response = await fetch(u, {
-    headers: {
-      apikey: RELAY_KEY,
-      "x-region": "ap-southeast-1"
-    }
-  });
+  const headers = { "x-region": "ap-southeast-1" };
+  if (RELAY_KEY) headers.apikey = RELAY_KEY;
+  const response = await fetch(u, { headers });
   const text = await response.text();
   if (!response.ok) throw new Error("Market relay HTTP " + response.status + " " + text.slice(0, 800));
   return JSON.parse(text);
@@ -175,7 +169,7 @@ async function relayJson(mode, symbols = []) {
 
 async function writeSystemEvent(eventType, severity, component, message, metadata = {}) {
   try {
-    await sb("system_events", "POST", {}, {
+    await db("system_events", "POST", {}, {
       created_at: iso(),
       event_type: eventType,
       severity,
@@ -190,7 +184,7 @@ async function writeSystemEvent(eventType, severity, component, message, metadat
 
 async function writeAudit(action, objectType = null, objectId = null, details = {}) {
   try {
-    await sb("audit_logs", "POST", {}, {
+    await db("audit_logs", "POST", {}, {
       created_at: iso(),
       actor: "system",
       action,
@@ -213,7 +207,7 @@ async function writeProviderStatus(status, message = null, dataset = "engine", l
     metadata: { runtime_revision: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown" }
   };
   try {
-    await sb("provider_status", "POST", { on_conflict: "provider,dataset" }, {
+    await db("provider_status", "POST", { on_conflict: "provider,dataset" }, {
       provider: "BYBIT_RELAY",
       dataset,
       ...payload
@@ -235,13 +229,13 @@ async function ensureFeatureRegistry() {
     enabled: true,
     version: FEATURE_VERSION
   }));
-  await sb("feature_registry", "POST", { on_conflict: "feature_id" }, rows, {
+  await db("feature_registry", "POST", { on_conflict: "feature_id" }, rows, {
     Prefer: "resolution=merge-duplicates,return=minimal"
   });
 }
 
 async function ensureModel() {
-  await sb("model_versions", "POST", { on_conflict: "model_id" }, {
+  await db("model_versions", "POST", { on_conflict: "model_id" }, {
     model_id: MODEL_ID,
     model_family: "deterministic_evidence_rules",
     target_definition: "1R/2R/3R forward setup qualification",
@@ -264,7 +258,7 @@ async function ensureModel() {
     { id: D1_MODEL_ID, horizon: "D1", family: "deterministic_position_rules", target: "24h positional continuation shadow qualification" },
     { id: MTF_MODEL_ID, horizon: "H4", family: "deterministic_multitimeframe_rules", target: "D1 directional context + H4 setup + H1 entry timing shadow qualification" }
   ]) {
-    await sb("model_versions", "POST", { on_conflict: "model_id" }, {
+    await db("model_versions", "POST", { on_conflict: "model_id" }, {
       model_id: spec.id,
       model_family: spec.family,
       target_definition: spec.target,
@@ -284,7 +278,7 @@ async function trainCalibration(force = false) {
   if (!force && now - state.lastTrainingAt < TRAIN_INTERVAL_MS) return state.calibration;
   state.lastTrainingAt = now;
   try {
-    const rows = await sb("signal_outcomes", "GET", {
+    const rows = await db("signal_outcomes", "GET", {
       select: "signal_id,outcome,t1_hit,evaluation_version,holding_seconds",
       limit: "5000"
     });
@@ -298,7 +292,7 @@ async function trainCalibration(force = false) {
       return state.calibration;
     }
 
-    const signals = await sb("signals", "GET", {
+    const signals = await db("signals", "GET", {
       select: "signal_id,signal,p_t1,expected_value,model_id",
       signal_id: "in.(" + ids.join(",") + ")",
       model_id: "eq." + MODEL_ID,
@@ -352,7 +346,7 @@ async function trainCalibration(force = false) {
       status: calibrationActive ? "ACTIVE" : (used >= 50 ? "EDGE_NOT_CONFIRMED" : "WARMING")
     };
 
-    await sb("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
+    await db("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
       calibration_id: MODEL_ID + ":" + Date.now(),
       model_id: MODEL_ID,
       method: "bayesian_probability_binning",
@@ -368,7 +362,7 @@ async function trainCalibration(force = false) {
       active: calibrationActive
     }, { Prefer: "resolution=merge-duplicates,return=minimal" });
 
-    await sb("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
+    await db("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
       validation_metrics: {
         calibration: state.calibration,
       validation: state.validation,
@@ -391,13 +385,13 @@ async function trainCalibration(force = false) {
 
 async function runWalkForwardValidation() {
   try {
-    const modelSignals = await sb("signals", "GET", {
+    const modelSignals = await db("signals", "GET", {
       select: "signal_id",
       model_id: "eq." + MODEL_ID,
       limit: "5000"
     });
     const modelSignalIds = new Set(modelSignals.map(x => x.signal_id));
-    const rows = await sb("signal_outcomes", "GET", {
+    const rows = await db("signal_outcomes", "GET", {
       select: "signal_id,evaluated_at,outcome,pnl_after_cost,holding_seconds,evaluation_version",
       order: "evaluated_at.asc",
       limit: "5000"
@@ -451,7 +445,7 @@ async function runWalkForwardValidation() {
       test: metrics(test),
       robustness
     };
-    const run = await sb("backtest_runs", "POST", {}, {
+    const run = await db("backtest_runs", "POST", {}, {
       started_at: iso(),
       finished_at: iso(),
       universe_methodology: "recorded_signal_set",
@@ -462,7 +456,7 @@ async function runWalkForwardValidation() {
       status: "COMPLETE"
     }, { Prefer: "return=representation" });
     state.validation.runId = run?.[0]?.run_id || null;
-    await sb("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
+    await db("model_versions", "PATCH", { model_id: "eq." + MODEL_ID }, {
       validation_metrics: {
         calibration: state.calibration,
         validation: state.validation,
@@ -479,7 +473,7 @@ async function runWalkForwardValidation() {
 
 async function readKillSwitch() {
   try {
-    const rows = await sb("kill_switch", "GET", { select: "enabled,reason", id: "eq.1", limit: "1" });
+    const rows = await db("kill_switch", "GET", { select: "enabled,reason", id: "eq.1", limit: "1" });
     state.killSwitch = Boolean(rows?.[0]?.enabled);
     return rows?.[0] || { enabled: false };
   } catch (e) {
@@ -490,7 +484,7 @@ async function readKillSwitch() {
 }
 
 async function persistUniverseSnapshot(ranked, provider = "BYBIT_RELAY") {
-  const snapshotRows = await sb("universe_snapshots", "POST", {}, {
+  const snapshotRows = await db("universe_snapshots", "POST", {}, {
     captured_at: iso(),
     universe_name: "top30_dynamic",
     methodology_version: "entry_eligibility_v2",
@@ -511,7 +505,7 @@ async function persistUniverseSnapshot(ranked, provider = "BYBIT_RELAY") {
     eligibility_status: "ELIGIBLE",
     exclusion_reason: null
   }));
-  await sb("universe_members", "POST", {}, members, { Prefer: "return=minimal" });
+  await db("universe_members", "POST", {}, members, { Prefer: "return=minimal" });
   return snapshotId;
 }
 
@@ -545,7 +539,7 @@ async function refreshUniverse() {
         const base = String(x.baseAsset).toUpperCase();
         const assetId = "bybit:" + base.toLowerCase();
         try {
-          await sb("assets", "POST", { on_conflict: "asset_id" }, {
+          await db("assets", "POST", { on_conflict: "asset_id" }, {
             asset_id: assetId,
             symbol: base,
             name: base,
@@ -589,7 +583,7 @@ async function refreshUniverse() {
     }
   }
 
-  const fallback = await sb("assets", "GET", {
+  const fallback = await db("assets", "GET", {
     select: "asset_id,symbol,metadata,active",
     active: "eq.true",
     limit: "100"
@@ -676,7 +670,7 @@ function meanNumbers(values) {
 
 async function evaluateHorizonModel(modelId) {
   try {
-    const signals = await sb("signals", "GET", {
+    const signals = await db("signals", "GET", {
       select: "signal_id,signal,p_t1,created_at",
       model_id: "eq." + modelId,
       order: "created_at.asc",
@@ -689,7 +683,7 @@ async function evaluateHorizonModel(modelId) {
       return { calibration, validation, gate: evaluateSignalReadiness(calibration, validation) };
     }
 
-    const outcomes = await sb("signal_outcomes", "GET", {
+    const outcomes = await db("signal_outcomes", "GET", {
       select: "signal_id,evaluated_at,outcome,t1_hit,pnl_after_cost",
       order: "evaluated_at.asc",
       limit: "5000"
@@ -751,7 +745,7 @@ async function evaluateHorizonModel(modelId) {
     const gate = evaluateSignalReadiness(calibration, validation);
 
     if (usable.length) {
-      await sb("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
+      await db("model_calibrations", "POST", { on_conflict: "calibration_id" }, {
         calibration_id: modelId + ":shadow:" + usable.length,
         model_id: modelId,
         method: "shadow_bayesian_outcome_calibration",
@@ -865,7 +859,7 @@ async function maybeWriteH4Shadow(asset, bars) {
     research: decision.research
   };
 
-  await sb("setup_candidates", "POST", {}, {
+  await db("setup_candidates", "POST", {}, {
     asset_id: asset.id,
     detected_at: iso(),
     horizon: "H4",
@@ -877,7 +871,7 @@ async function maybeWriteH4Shadow(asset, bars) {
     expires_at: iso(Date.now() + 60 * 60 * 1000)
   });
 
-  await sb("model_predictions", "POST", {}, {
+  await db("model_predictions", "POST", {}, {
     model_id: H4_MODEL_ID,
     asset_id: asset.id,
     predicted_at: iso(),
@@ -891,7 +885,7 @@ async function maybeWriteH4Shadow(asset, bars) {
     feature_snapshot: snapshot
   });
 
-  const rows = await sb("signals", "POST", {}, {
+  const rows = await db("signals", "POST", {}, {
     asset_id: asset.id,
     created_at: iso(),
     horizon: "H4",
@@ -1023,7 +1017,7 @@ async function maybeWriteD1Shadow(asset, bars, d1Anchor) {
     research: decision.research
   };
 
-  await sb("setup_candidates", "POST", {}, {
+  await db("setup_candidates", "POST", {}, {
     asset_id: asset.id,
     detected_at: iso(),
     horizon: "D1",
@@ -1035,7 +1029,7 @@ async function maybeWriteD1Shadow(asset, bars, d1Anchor) {
     expires_at: iso(Date.now() + 6 * 60 * 60 * 1000)
   });
 
-  await sb("model_predictions", "POST", {}, {
+  await db("model_predictions", "POST", {}, {
     model_id: D1_MODEL_ID,
     asset_id: asset.id,
     predicted_at: iso(),
@@ -1049,7 +1043,7 @@ async function maybeWriteD1Shadow(asset, bars, d1Anchor) {
     feature_snapshot: snapshot
   });
 
-  const rows = await sb("signals", "POST", {}, {
+  const rows = await db("signals", "POST", {}, {
     asset_id: asset.id,
     created_at: iso(),
     horizon: "D1",
@@ -1182,7 +1176,7 @@ async function maybeWriteMtfShadow(asset, bars, d1Anchor) {
     research: decision.research
   };
 
-  await sb("setup_candidates", "POST", {}, {
+  await db("setup_candidates", "POST", {}, {
     asset_id: asset.id,
     detected_at: iso(),
     horizon: "H4",
@@ -1194,7 +1188,7 @@ async function maybeWriteMtfShadow(asset, bars, d1Anchor) {
     expires_at: iso(Date.now() + 2 * 60 * 60 * 1000)
   });
 
-  await sb("model_predictions", "POST", {}, {
+  await db("model_predictions", "POST", {}, {
     model_id: MTF_MODEL_ID,
     asset_id: asset.id,
     predicted_at: iso(),
@@ -1208,7 +1202,7 @@ async function maybeWriteMtfShadow(asset, bars, d1Anchor) {
     feature_snapshot: snapshot
   });
 
-  const rows = await sb("signals", "POST", {}, {
+  const rows = await db("signals", "POST", {}, {
     asset_id: asset.id,
     created_at: iso(),
     horizon: "H4",
@@ -1249,7 +1243,7 @@ async function refreshHorizonResearch() {
     let h4Ready = 0, d1Ready = 0, mtfReady = 0;
 
     const histories = await Promise.all(state.assets.map(async asset => {
-      const bars = await sb("ohlcv", "GET", {
+      const bars = await db("ohlcv", "GET", {
         select: "asset_id,bucket_start,open,high,low,close,volume",
         asset_id: "eq." + asset.id,
         timeframe: "eq.1m",
@@ -1257,7 +1251,7 @@ async function refreshHorizonResearch() {
         order: "bucket_start.asc",
         limit: "500"
       });
-      const d1Rows = await sb("ohlcv", "GET", {
+      const d1Rows = await db("ohlcv", "GET", {
         select: "bucket_start,close",
         asset_id: "eq." + asset.id,
         timeframe: "eq.1m",
@@ -1291,9 +1285,9 @@ async function refreshHorizonResearch() {
       evaluateHorizonModel(D1_MODEL_ID),
       evaluateHorizonModel(MTF_MODEL_ID)
     ]);
-    const h4Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + H4_MODEL_ID, limit: "5000" });
-    const d1Signals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + D1_MODEL_ID, limit: "5000" });
-    const mtfSignals = await sb("signals", "GET", { select: "signal_id", model_id: "eq." + MTF_MODEL_ID, limit: "5000" });
+    const h4Signals = await db("signals", "GET", { select: "signal_id", model_id: "eq." + H4_MODEL_ID, limit: "5000" });
+    const d1Signals = await db("signals", "GET", { select: "signal_id", model_id: "eq." + D1_MODEL_ID, limit: "5000" });
+    const mtfSignals = await db("signals", "GET", { select: "signal_id", model_id: "eq." + MTF_MODEL_ID, limit: "5000" });
 
     state.horizonResearch.H1 = {
       modelId: MODEL_ID,
@@ -1332,7 +1326,7 @@ async function refreshHorizonResearch() {
       gate: mtfEvidence.gate
     };
 
-    await sb("model_versions", "PATCH", { model_id: "eq." + H4_MODEL_ID }, {
+    await db("model_versions", "PATCH", { model_id: "eq." + H4_MODEL_ID }, {
       training_window: {
         type: "shadow_evidence_collection",
         ready_assets: h4Ready,
@@ -1350,7 +1344,7 @@ async function refreshHorizonResearch() {
       status: state.horizonResearch.H4.state
     });
 
-    await sb("model_versions", "PATCH", { model_id: "eq." + D1_MODEL_ID }, {
+    await db("model_versions", "PATCH", { model_id: "eq." + D1_MODEL_ID }, {
       training_window: {
         type: "shadow_evidence_collection",
         ready_assets: d1Ready,
@@ -1368,7 +1362,7 @@ async function refreshHorizonResearch() {
       status: state.horizonResearch.D1.state
     });
 
-    await sb("model_versions", "PATCH", { model_id: "eq." + MTF_MODEL_ID }, {
+    await db("model_versions", "PATCH", { model_id: "eq." + MTF_MODEL_ID }, {
       training_window: {
         type: "shadow_evidence_collection",
         ready_assets: mtfReady,
@@ -1516,7 +1510,7 @@ async function persistFeatures(asset, feat, observedAt) {
 
 async function persistRegime(asset, feat, observedAt) {
   const regime = classifyRegime(feat);
-  await sb("regime_states", "POST", {}, {
+  await db("regime_states", "POST", {}, {
     asset_id: asset.id,
     observed_at: observedAt,
     horizon: "H1",
@@ -1551,7 +1545,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     regime
   };
 
-  const setupRows = await sb("setup_candidates", "POST", {}, {
+  const setupRows = await db("setup_candidates", "POST", {}, {
     asset_id: asset.id,
     detected_at: iso(),
     horizon: decision.horizon,
@@ -1569,7 +1563,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     expires_at: iso(Date.now() + 15 * 60 * 1000)
   }, { Prefer: "return=representation" });
 
-  await sb("model_predictions", "POST", {}, {
+  await db("model_predictions", "POST", {}, {
     model_id: MODEL_ID,
     asset_id: asset.id,
     predicted_at: iso(),
@@ -1583,7 +1577,7 @@ async function maybeWriteSignal(asset, feat, regime) {
     feature_snapshot: snapshot
   });
 
-  const signalRows = await sb("signals", "POST", {}, {
+  const signalRows = await db("signals", "POST", {}, {
     asset_id: asset.id,
     created_at: iso(),
     horizon: decision.horizon,
@@ -1634,7 +1628,7 @@ async function maybeWriteSignal(asset, feat, regime) {
 async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
   if (!signal?.signal_id) return;
   try {
-    const open = await sb("paper_trades", "GET", {
+    const open = await db("paper_trades", "GET", {
       select: "paper_trade_id,signal_id,status,metadata",
       status: "eq.OPEN",
       limit: "200"
@@ -1643,7 +1637,7 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
 
     const notional = 100;
     const qty = notional / finite(decisionSnapshot.entry, 1);
-    await sb("paper_trades", "POST", {}, {
+    await db("paper_trades", "POST", {}, {
       signal_id: signal.signal_id,
       opened_at: iso(),
       side: decisionSnapshot.action,
@@ -1675,7 +1669,7 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
 }
 
 async function managePaperTrades() {
-  const open = await sb("paper_trades", "GET", {
+  const open = await db("paper_trades", "GET", {
     select: "paper_trade_id,signal_id,side,entry_price,quantity,opened_at,fees,slippage,funding_cost,metadata",
     status: "eq.OPEN",
     limit: "200"
@@ -1697,7 +1691,7 @@ async function managePaperTrades() {
       const t2 = finite(meta.target_2);
       const t3 = finite(meta.target_3);
 
-      const ticks = await sb("market_ticks", "GET", {
+      const ticks = await db("market_ticks", "GET", {
         select: "observed_at,price",
         asset_id: "eq." + assetId,
         observed_at: "gte." + trade.opened_at,
@@ -1754,7 +1748,7 @@ async function managePaperTrades() {
       const costs = finite(trade.fees) + finite(trade.slippage) + (exitNotional * PAPER_FEE_RATE) + (exitNotional * PAPER_SLIPPAGE_RATE) + finite(trade.funding_cost);
       const net = gross - costs;
 
-      await sb("paper_trades", "PATCH", {
+      await db("paper_trades", "PATCH", {
         paper_trade_id: "eq." + trade.paper_trade_id
       }, {
         closed_at: iso(),
@@ -1763,7 +1757,7 @@ async function managePaperTrades() {
         status: "CLOSED"
       });
 
-      await sb("signal_outcomes", "POST", { on_conflict: "signal_id" }, {
+      await db("signal_outcomes", "POST", { on_conflict: "signal_id" }, {
         signal_id: trade.signal_id,
         evaluated_at: iso(),
         outcome,
@@ -2085,16 +2079,16 @@ function publicMarket() {
 }
 
 async function dashboardPayload() {
-  const providers = await sb("provider_status", "GET", {
+  const providers = await db("provider_status", "GET", {
     select: "provider,dataset,checked_at,status,latency_ms,last_event_at,error_message",
     limit: "50"
   });
-  const paperTrades = await sb("paper_trades", "GET", {
+  const paperTrades = await db("paper_trades", "GET", {
     select: "paper_trade_id,signal_id,opened_at,closed_at,side,entry_price,exit_price,quantity,realized_pnl,status,metadata",
     order: "opened_at.desc",
     limit: "30"
   });
-  const dbSignals = await sb("signals", "GET", {
+  const dbSignals = await db("signals", "GET", {
     select: "signal_id,asset_id,created_at,horizon,signal,entry,stop_loss,target_1,target_2,target_3,p_t1,p_t2,p_t3,expected_value,risk_state,data_quality,model_id,feature_version,reasons",
     order: "created_at.desc",
     limit: "30"
@@ -2157,15 +2151,15 @@ function healthReadiness() {
   const live = Boolean(state.lastTrade && now - Date.parse(state.lastTrade) < 20000);
   const bookLive = Boolean(state.lastBook && now - Date.parse(state.lastBook) < 20000);
   const universeReady = state.assets.length >= 5 && Boolean(state.lastUniverseRefresh);
-  const supabaseSuccessMs = state.lastSupabaseSuccessAt ? Date.parse(state.lastSupabaseSuccessAt) : 0;
-  const supabaseFailureMs = state.lastSupabaseFailureAt ? Date.parse(state.lastSupabaseFailureAt) : 0;
-  const supabaseLive = Boolean(
-    supabaseSuccessMs &&
-    now - supabaseSuccessMs < 60000 &&
-    supabaseSuccessMs >= supabaseFailureMs
+  const storageSuccessMs = state.lastStorageSuccessAt ? Date.parse(state.lastStorageSuccessAt) : 0;
+  const storageFailureMs = state.lastStorageFailureAt ? Date.parse(state.lastStorageFailureAt) : 0;
+  const storageLive = Boolean(
+    storageSuccessMs &&
+    now - storageSuccessMs < 60000 &&
+    storageSuccessMs >= storageFailureMs
   );
-  const ready = state.ready && universeReady && live && bookLive && supabaseLive && !state.killSwitch;
-  return { ready, live, bookLive, universeReady, supabaseLive };
+  const ready = state.ready && universeReady && live && bookLive && storageLive && !state.killSwitch;
+  return { ready, live, bookLive, universeReady, storageLive };
 }
 
 async function healthPayload() {
@@ -2178,11 +2172,15 @@ async function healthPayload() {
       universe: readiness.universeReady,
       tradeStream: readiness.live,
       orderbookStream: readiness.bookLive,
-      supabase: readiness.supabaseLive
+      storage: readiness.storageLive,
+      storageBackend: "turso"
     },
     bootStage: state.bootStage,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
-    source: "BYBIT_PUBLIC_MARKET_DATA",
+    source: "BYBIT_PUBLIC_MARKET_DATA_VIA_CLOUDFLARE",
+    storageBackend: "turso",
+    archiveBackend: "r2",
+    archive: state.archive,
     paperOnly: true,
     executionEnabled: false,
     signalReady: productionSignalReady(),
@@ -2193,8 +2191,8 @@ async function healthPayload() {
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
     lastMarketSuccessAt: state.lastMarketSuccessAt,
-    lastSupabaseSuccessAt: state.lastSupabaseSuccessAt,
-    lastSupabaseFailureAt: state.lastSupabaseFailureAt,
+    lastStorageSuccessAt: state.lastStorageSuccessAt,
+    lastStorageFailureAt: state.lastStorageFailureAt,
     assets: state.assets.length,
     counts: state.counts,
     lastTrade: state.lastTrade,
@@ -2238,7 +2236,8 @@ async function serveStatic(pathname, res) {
   }
 }
 
-const preRallyScanner = createPreRallyScanner({ db: sb, log });
+const preRallyScanner = createPreRallyScanner({ db, log });
+const archiveRuntime = startArchiveLoop(primaryStore);
 const PRE_RALLY_DISCLAIMER = "This is an automated research signal based on market and blockchain data. It is not financial advice, does not guarantee future price movement, and may produce false positives.";
 
 const server = http.createServer(async (req, res) => {
@@ -2306,6 +2305,17 @@ async function warmResearchState() {
 async function boot() {
   state.bootStage = "configuring";
   requireConfigured();
+  if (state.archive.configured && !state.archive.verified) {
+    try {
+      await createR2Archive().verifyWrite();
+      state.archive.verified = true;
+      state.archive.lastError = null;
+      log("r2_archive_verified", { enabled: state.archive.enabled });
+    } catch (e) {
+      state.archive.lastError = String(e?.message || e);
+      recordError(e, "r2_verify");
+    }
+  }
   await readKillSwitch();
   await ensureFeatureRegistry();
   await ensureModel();
@@ -2318,24 +2328,31 @@ async function boot() {
   log("live_market_probe_ok", liveProbe);
 
   const readiness = healthReadiness();
-  if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.supabaseLive) {
+  if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.storageLive) {
     throw new Error(
       "Production readiness gate failed: universe=" + readiness.universeReady +
       ", trade=" + readiness.live +
       ", orderbook=" + readiness.bookLive +
-      ", supabase=" + readiness.supabaseLive
+      ", storage=" + readiness.storageLive
     );
   }
 
   state.ready = true;
   state.bootStage = "ready";
+  await primaryStore.markHealth("runtime", "READY", {
+    assets: state.assets.length,
+    marketRelay: "cloudflare",
+    paperOnly: true,
+    executionEnabled: false,
+    archiveVerified: state.archive.verified
+  });
   log("engine_ready", {
     assets: state.assets.length,
     paperOnly: true,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
-    supabaseLive: readiness.supabaseLive
+    storageLive: readiness.storageLive
   });
   await writeSystemEvent("ENGINE_READY", "info", "runtime", "Crypto Intelligence Engine ready", {
     assets: state.assets.length,
@@ -2364,6 +2381,7 @@ server.listen(PORT, HOST, () => {
     state.bootStage = "failed";
     state.ready = false;
     recordError(e, "boot");
+    await primaryStore.markHealth("runtime", "FAILED", { error: String(e?.message || e) }).catch(() => {});
     await writeSystemEvent("ENGINE_BOOT_FAILED", "error", "runtime", String(e?.message || e));
   });
 });

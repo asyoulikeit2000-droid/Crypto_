@@ -3,13 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=22"
-  },
+  "engines": { "node": ">=22" },
   "scripts": {
-    "start": "node server-turso.mjs",
+    "start": "node server.mjs",
     "test": "node --test",
-    "check:migration": "node --check storage/compat.mjs && node --check storage/fetch-shim.mjs && node --check storage/r2.mjs && node --check storage/archive-loop.mjs && node --check server-turso.mjs && node --check server.mjs"
+    "check:migration": "node --check storage/compat.mjs && node --check storage/r2.mjs && node --check storage/archive-loop.mjs && node --check server.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.15.15",

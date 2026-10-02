@@ -1,4 +1,4 @@
-import { S3Client, HeadBucketCommand, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, HeadBucketCommand, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 
@@ -25,6 +25,14 @@ export function createR2Archive() {
     async healthcheck() {
       await client.send(new HeadBucketCommand({ Bucket: bucket }));
       return true;
+    },
+    async verifyWrite() {
+      const key = "_health/" + Date.now() + ".json";
+      const body = Buffer.from(JSON.stringify({ ok: true, checkedAt: new Date().toISOString() }));
+      await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: "application/json" }));
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+      return { ok: true };
     },
     async putJsonlGzip({ dataset, rows, periodStart, periodEnd, symbol = "all" }) {
       if (!Array.isArray(rows) || !rows.length) return null;

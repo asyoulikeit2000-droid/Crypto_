@@ -6,7 +6,8 @@ const DATASETS = [
   { table: "feature_values", ageMs: 24 * 60 * 60 * 1000 },
   { table: "regime_states", ageMs: 24 * 60 * 60 * 1000 },
   { table: "data_quality", ageMs: 24 * 60 * 60 * 1000 },
-  { table: "market_ticks", ageMs: 30 * 60 * 60 * 1000 }
+  { table: "market_ticks", ageMs: 30 * 60 * 60 * 1000 },
+  { table: "ohlcv", ageMs: 14 * 24 * 60 * 60 * 1000 }
 ];
 
 function timestampField(row) {
@@ -14,6 +15,20 @@ function timestampField(row) {
     if (row?.[key]) return key;
   }
   return null;
+}
+
+function deleteParams(table, row) {
+  const fields = {
+    trades: ["exchange","asset_id","trade_id"],
+    orderbook_snapshots: ["exchange","asset_id","observed_at"],
+    feature_values: ["asset_id","feature_id","observed_at"],
+    regime_states: ["asset_id","observed_at"],
+    data_quality: ["exchange","asset_id","dataset","checked_at"],
+    market_ticks: ["exchange","asset_id","observed_at"],
+    ohlcv: ["exchange","asset_id","timeframe","bucket_start"]
+  }[table] || [];
+  if (!fields.length || fields.some(k => row?.[k] === undefined || row?.[k] === null)) return null;
+  return Object.fromEntries(fields.map(k => [k, "eq." + row[k]]));
 }
 
 export async function archiveOnce(store, log = console.log) {
@@ -58,9 +73,12 @@ export async function archiveOnce(store, log = console.log) {
     }, { Prefer: "resolution=merge-duplicates,return=minimal" });
 
     for (const row of eligible) {
-      const field = timestampField(row);
-      if (!field) continue;
-      await store.db(spec.table, "DELETE", { [field]: "eq." + row[field] });
+      const params = deleteParams(spec.table, row);
+      if (!params) {
+        log(JSON.stringify({ message: "r2_archive_delete_skipped", dataset: spec.table, reason: "missing_unique_fields" }));
+        continue;
+      }
+      await store.db(spec.table, "DELETE", params);
     }
     result.push({ dataset: spec.table, archived: eligible.length, objectKey: manifest.objectKey });
     log(JSON.stringify({ message: "r2_archive_complete", dataset: spec.table, rows: eligible.length, objectKey: manifest.objectKey }));

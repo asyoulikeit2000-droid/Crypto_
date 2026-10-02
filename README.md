@@ -2,42 +2,31 @@
 
 Private, paper-only crypto market intelligence system.
 
-## Production state
+## Production architecture
 
-- Live Bybit public-market ingestion through a Supabase Edge Function relay
-- Dynamic Top-30 eligible universe
-- Live trades, order books, funding, open interest, OHLCV and feature pipeline
-- Supabase-backed model calibration, validation, paper trading and audit history
-- Railway production runtime with `/api/health`
-- Browser dashboard at the Railway production domain
-- **No live trade execution**
+- Railway: continuous Node.js engine, API and dashboard
+- Turso: primary operational database for signals, outcomes, models, scanner state and recent market history
+- Cloudflare Workers: read-only Bybit market-data relay
+- Cloudflare R2: compressed archive for rebuildable high-frequency and historical data
+- No Supabase runtime dependency
+- No live trade execution
 
 ## Signal safety
 
-The market engine can be operational while the signal model remains in shadow validation.
+The engine can be operational while signal models remain in shadow validation. Actionable publishing stays blocked until calibration and walk-forward gates pass. H1, H4, D1 and multi-timeframe research remain paper/shadow until their evidence is sufficient.
 
-Actionable signal publishing is blocked unless all of these are true:
+## Storage policy
 
-1. Calibration status is `ACTIVE`
-2. Walk-forward validation is complete
-3. The out-of-sample test set has at least 20 observations
-4. Out-of-sample average PnL is positive
-5. Out-of-sample total PnL is positive
+Turso retains operational and research-critical records. R2 receives older/rebuildable telemetry in compressed NDJSON objects. Archive deletion only occurs after the R2 object is written and verified.
 
-Until those gates pass, the dashboard must show **SHADOW / NOT VALIDATED**.
-
-## Production service
+## Production
 
 Railway service: `crypto-engine-production`
 
-Health endpoint: `/api/health`
+Health: `/api/health`
 
 Dashboard API: `/api/dashboard`
 
 ## Validation
 
-GitHub Actions validates the Node runtime files and dashboard JavaScript on every push to `main`.
-
-## Operating principle
-
-Market-data uptime is not the same as predictive edge. The system stays paper-only and blocks actionable signals until the model demonstrates positive out-of-sample performance.
+GitHub Actions runs syntax checks and Node tests. Production is not considered healthy until Railway readiness confirms the dynamic universe, live trades, live order books and Turso persistence.
