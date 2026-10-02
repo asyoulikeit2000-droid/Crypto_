@@ -105,6 +105,22 @@ export function createTursoCompat() {
         PRIMARY KEY(table_name,row_key)
       )`,
       `CREATE INDEX IF NOT EXISTS idx_kv_rows_table_updated ON kv_rows(table_name,updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_kv_rows_asset_time ON kv_rows(
+        table_name,
+        json_extract(payload_json,'$.asset_id'),
+        json_extract(payload_json,'$.timeframe'),
+        json_extract(payload_json,'$.bucket_start')
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_kv_rows_model_created ON kv_rows(
+        table_name,
+        json_extract(payload_json,'$.model_id'),
+        json_extract(payload_json,'$.created_at')
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_kv_rows_provider_dataset ON kv_rows(
+        table_name,
+        json_extract(payload_json,'$.provider'),
+        json_extract(payload_json,'$.dataset')
+      )`,
       `CREATE TABLE IF NOT EXISTS runtime_health (
         component TEXT PRIMARY KEY,
         status TEXT NOT NULL,
@@ -130,11 +146,59 @@ export function createTursoCompat() {
     return Number(r.rows?.[0]?.ok || 0) === 1;
   }
 
-  async function list(table) {
-    const r = await client.execute({
-      sql: "SELECT row_key,payload_json FROM kv_rows WHERE table_name=? ORDER BY updated_at DESC LIMIT 10000",
-      args: [table]
-    });
+  function sqlValue(v) {
+    const parsed = parseScalar(v);
+    if (parsed === true) return 1;
+    if (parsed === false) return 0;
+    return parsed;
+  }
+
+  function jsonExpr(field) {
+    if (!/^[A-Za-z0-9_]+$/.test(field)) throw new Error("Unsupported storage field " + field);
+    return "json_extract(payload_json,'$." + field + "')";
+  }
+
+  function buildQuery(table, params = {}) {
+    const where = ["table_name=?"];
+    const args = [table];
+    for (const [key, raw] of Object.entries(params || {})) {
+      if (["select","order","limit","offset","on_conflict","Prefer"].includes(key)) continue;
+      const expr = jsonExpr(key);
+      const s = String(raw ?? "");
+      if (s.startsWith("eq.")) { where.push(expr + " = ?"); args.push(sqlValue(s.slice(3))); continue; }
+      if (s.startsWith("neq.")) { where.push(expr + " != ?"); args.push(sqlValue(s.slice(4))); continue; }
+      if (s.startsWith("gt.")) { where.push(expr + " > ?"); args.push(sqlValue(s.slice(3))); continue; }
+      if (s.startsWith("gte.")) { where.push(expr + " >= ?"); args.push(sqlValue(s.slice(4))); continue; }
+      if (s.startsWith("lt.")) { where.push(expr + " < ?"); args.push(sqlValue(s.slice(3))); continue; }
+      if (s.startsWith("lte.")) { where.push(expr + " <= ?"); args.push(sqlValue(s.slice(4))); continue; }
+      if (s === "is.null") { where.push(expr + " IS NULL"); continue; }
+      if (s === "not.is.null") { where.push(expr + " IS NOT NULL"); continue; }
+      if (s.startsWith("in.(") && s.endsWith(")")) {
+        const vals = s.slice(4,-1).split(",").map(x => sqlValue(x.trim()));
+        if (!vals.length) { where.push("1=0"); continue; }
+        where.push(expr + " IN (" + vals.map(() => "?").join(",") + ")");
+        args.push(...vals);
+        continue;
+      }
+      throw new Error("Unsupported storage filter " + key + "=" + s);
+    }
+
+    let orderSql = "updated_at DESC";
+    if (params.order) {
+      const [field, dirRaw] = String(params.order).split(".");
+      const dir = String(dirRaw || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
+      orderSql = jsonExpr(field) + " " + dir;
+    }
+    const limit = Math.max(0, Math.min(50000, Number(params.limit ?? 10000)));
+    const offset = Math.max(0, Number(params.offset || 0));
+    const sql = "SELECT row_key,payload_json FROM kv_rows WHERE " + where.join(" AND ") +
+      " ORDER BY " + orderSql + " LIMIT ? OFFSET ?";
+    return { sql, args: [...args, limit, offset] };
+  }
+
+  async function queryEntries(table, params = {}) {
+    const q = buildQuery(table, params);
+    const r = await client.execute(q);
     return r.rows.map(x => ({ rowKey: String(x.row_key), row: JSON.parse(String(x.payload_json)) }));
   }
 
@@ -142,20 +206,8 @@ export function createTursoCompat() {
     const now = new Date().toISOString();
 
     if (method === "GET") {
-      let rows = (await list(table)).map(x => x.row);
-      rows = rows.filter(row => Object.entries(params || {}).every(([k,v]) => matches(row,k,v)));
-      if (params.order) {
-        const [field,dir] = String(params.order).split(".");
-        rows.sort((a,b) => {
-          const av=a?.[field], bv=b?.[field];
-          if (av === bv) return 0;
-          const cmp = av == null ? -1 : bv == null ? 1 : (av > bv ? 1 : -1);
-          return dir === "desc" ? -cmp : cmp;
-        });
-      }
-      const off = Math.max(0, Number(params.offset || 0));
-      const lim = Math.max(0, Number(params.limit || rows.length));
-      return rows.slice(off, off + lim).map(r => project(r, params.select));
+      const entries = await queryEntries(table, params);
+      return entries.map(x => project(x.row, params.select));
     }
 
     if (method === "POST") {
@@ -203,10 +255,9 @@ export function createTursoCompat() {
     }
 
     if (method === "PATCH") {
-      const entries = await list(table);
+      const entries = await queryEntries(table, { ...params, limit: params.limit || 10000 });
       const out = [];
       for (const item of entries) {
-        if (!Object.entries(params || {}).every(([k,v]) => matches(item.row,k,v))) continue;
         const next = { ...item.row, ...(body || {}) };
         await client.execute({
           sql: "UPDATE kv_rows SET updated_at=?,payload_json=? WHERE table_name=? AND row_key=?",
@@ -218,10 +269,12 @@ export function createTursoCompat() {
     }
 
     if (method === "DELETE") {
-      const entries = await list(table);
-      for (const item of entries) {
-        if (!Object.entries(params || {}).every(([k,v]) => matches(item.row,k,v))) continue;
-        await client.execute({ sql:"DELETE FROM kv_rows WHERE table_name=? AND row_key=?", args:[table,item.rowKey] });
+      const entries = await queryEntries(table, { ...params, limit: params.limit || 10000 });
+      if (entries.length) {
+        await client.batch(entries.map(item => ({
+          sql: "DELETE FROM kv_rows WHERE table_name=? AND row_key=?",
+          args: [table,item.rowKey]
+        })), "write");
       }
       return [];
     }
