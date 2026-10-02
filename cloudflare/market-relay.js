@@ -61,6 +61,33 @@ export default {
       }
 
       if (!symbols.length) return json({ ok: false, error: "symbols_required" }, 400);
+
+      if (mode === "history") {
+        const errors = [];
+        const history = await Promise.all(symbols.slice(0, 5).map(async s => {
+          const latest = await safe(
+            "/v5/market/kline?category=linear&symbol=" + encodeURIComponent(s) + "&interval=1&limit=1000",
+            { result: { list: [] } }, "history_latest:" + s, errors
+          );
+          const latestList = latest.result?.list || [];
+          const oldestMs = latestList.length ? Math.min(...latestList.map(x => Number(x?.[0]) || Date.now())) : Date.now();
+          const older = await safe(
+            "/v5/market/kline?category=linear&symbol=" + encodeURIComponent(s) + "&interval=1&end=" + Math.max(0, oldestMs - 1) + "&limit=600",
+            { result: { list: [] } }, "history_older:" + s, errors
+          );
+          const all = [...latestList, ...(older.result?.list || [])];
+          const dedup = new Map(all.map(k => [String(k?.[0]), k]));
+          return { symbol: s, list: [...dedup.values()].sort((a,b) => Number(b?.[0]||0) - Number(a?.[0]||0)) };
+        }));
+        return json({
+          ok: true,
+          mode,
+          source: "BYBIT_VIA_CLOUDFLARE",
+          generatedAt: new Date().toISOString(),
+          history,
+          diagnostics: { errors }
+        });
+      }
       const errors = [];
       const tickersResponse = await getJson("/v5/market/tickers?category=linear");
       const tickerMap = new Map((tickersResponse.result?.list || []).map(x => [String(x.symbol || "").toUpperCase(), x]));

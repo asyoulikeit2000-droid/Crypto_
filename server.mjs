@@ -65,6 +65,8 @@ const state = {
   market: new Map(),
   intelligence: createIntelligenceEngine(),
   batchCursor: 0,
+  marketPollInFlight: false,
+  historyWarmup: { status: "PENDING", assets: 0, bars: 0, lastError: null },
   lastUniverseRefresh: null,
   lastPipelineRun: null,
   lastMarketSuccessAt: null,
@@ -1235,6 +1237,37 @@ async function maybeWriteMtfShadow(asset, bars, d1Anchor) {
   return signal;
 }
 
+async function warmHistoricalOhlcv() {
+  if (state.historyWarmup.status === "RUNNING" || state.historyWarmup.status === "COMPLETE") return state.historyWarmup;
+  state.historyWarmup = { status: "RUNNING", assets: 0, bars: 0, lastError: null };
+  try {
+    const assetBySymbol = new Map(state.assets.map(a => [a.symbol.toUpperCase() + "USDT", a]));
+    const chunkSize = 5;
+    for (let i = 0; i < state.assets.length; i += chunkSize) {
+      const chunk = state.assets.slice(i, i + chunkSize);
+      const relay = await relayJson("history", chunk.map(a => a.symbol + "USDT"));
+      for (const item of relay.history || []) {
+        const asset = assetBySymbol.get(String(item.symbol || "").toUpperCase());
+        if (!asset) continue;
+        const rows = klineRows(asset, item.list);
+        for (let j = 0; j < rows.length; j += 250) {
+          await insertRows("ohlcv", rows.slice(j, j + 250), "asset_id,exchange,timeframe,bucket_start", "ignore");
+        }
+        state.historyWarmup.assets++;
+        state.historyWarmup.bars += rows.length;
+      }
+    }
+    state.historyWarmup.status = state.historyWarmup.assets >= Math.min(20, state.assets.length) ? "COMPLETE" : "PARTIAL";
+    log("history_warmup_complete", { ...state.historyWarmup });
+    return state.historyWarmup;
+  } catch (e) {
+    state.historyWarmup.status = "FAILED";
+    state.historyWarmup.lastError = String(e?.message || e);
+    recordError(e, "history_warmup");
+    return state.historyWarmup;
+  }
+}
+
 async function refreshHorizonResearch() {
   try {
     if (!state.assets.length) return;
@@ -1532,6 +1565,7 @@ async function maybeWriteSignal(asset, feat, regime) {
 
   const prior = state.lastSignalAt.get(asset.id) || 0;
   if (Date.now() - prior < SIGNAL_COOLDOWN_MS) return null;
+  state.lastSignalAt.set(asset.id, Date.now());
 
   const snapshot = {
     feature_version: FEATURE_VERSION,
@@ -1848,7 +1882,8 @@ async function probeLiveMarket() {
 }
 
 async function pollMarketData() {
-  if (!state.assets.length) return;
+  if (!state.assets.length || state.marketPollInFlight) return;
+  state.marketPollInFlight = true;
   const batchSize = 15;
   const start = state.batchCursor % state.assets.length;
   const batch = Array.from({ length: Math.min(batchSize, state.assets.length) }, (_, i) =>
@@ -2018,6 +2053,8 @@ async function pollMarketData() {
   } catch (e) {
     await writeProviderStatus("DEGRADED", String(e?.message || e), "market", Date.now() - started);
     recordError(e, "market_poll");
+  } finally {
+    state.marketPollInFlight = false;
   }
 }
 
@@ -2180,6 +2217,7 @@ async function healthPayload() {
     archiveBackend: "r2",
     archive: state.archive,
     retention: state.retention,
+    historyWarmup: state.historyWarmup,
     paperOnly: true,
     executionEnabled: false,
     signalReady: productionSignalReady(),
@@ -2361,7 +2399,16 @@ async function boot() {
   setImmediate(() => pollMarketData().catch(e => recordError(e, "initial_poll")));
 
   preRallyScanner.start();
-  setImmediate(() => warmResearchState().catch(e => recordError(e, "research_warmup")));
+  setImmediate(async () => {
+    await warmHistoricalOhlcv();
+    await warmResearchState();
+  });
+  setInterval(async () => {
+    if (state.historyWarmup.status !== "COMPLETE") {
+      await warmHistoricalOhlcv();
+      await refreshHorizonResearch();
+    }
+  }, 10 * 60 * 1000);
 }
 
 server.listen(PORT, HOST, () => {
