@@ -17,9 +17,9 @@ export async function initializeTursoFetchShim() {
   }
   await initPromise;
 
-  const compatBase = (process.env.SUPABASE_URL || "https://turso-compat.invalid").replace(/\/$/, "");
+  const compatBase = "https://turso-compat.invalid";
   process.env.SUPABASE_URL = compatBase;
-  process.env.SUPABASE_SECRET_KEY ||= "turso-compat-local";
+  process.env.SUPABASE_SECRET_KEY = "turso-compat-local";
 
   globalThis.fetch = async (input, init = {}) => {
     const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input?.url;
