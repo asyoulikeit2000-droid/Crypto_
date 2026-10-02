@@ -1,17 +1,47 @@
 const BASE="https://api.dexscreener.com";
 const timeoutMs=Number(process.env.SCANNER_PROVIDER_TIMEOUT_MS||8000);
+const minRequestGapMs=Math.max(250,Number(process.env.SCANNER_PROVIDER_MIN_GAP_MS||900));
+const rateLimitCooldownMs=Math.max(3000,Number(process.env.SCANNER_PROVIDER_429_COOLDOWN_MS||15000));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let nextRequestAt=0;
+
+async function throttle(){
+  const wait=Math.max(0,nextRequestAt-Date.now());
+  if(wait)await sleep(wait);
+  nextRequestAt=Math.max(nextRequestAt,Date.now())+minRequestGapMs;
+}
+
+function retryAfterMs(response){
+  const raw=response?.headers?.get?.("retry-after");
+  if(!raw)return 0;
+  const seconds=Number(raw);
+  if(Number.isFinite(seconds))return Math.max(0,seconds*1000);
+  const at=Date.parse(raw);
+  return Number.isFinite(at)?Math.max(0,at-Date.now()):0;
+}
+
 async function request(path,retries=2){
   let last;
   for(let i=0;i<=retries;i++){
+    await throttle();
     const c=new AbortController(),t=setTimeout(()=>c.abort(),timeoutMs);
     try{
       const r=await fetch(BASE+path,{headers:{accept:"application/json"},signal:c.signal});
-      if(r.status===429||r.status>=500){last=new Error("DexScreener HTTP "+r.status); if(i<retries){await sleep(300*2**i);continue;}}
-      if(!r.ok) throw new Error("DexScreener HTTP "+r.status);
+      if(r.status===429){
+        last=new Error("DexScreener HTTP 429");
+        const cooldown=Math.max(rateLimitCooldownMs,retryAfterMs(r));
+        nextRequestAt=Math.max(nextRequestAt,Date.now()+cooldown);
+        if(i<retries)continue;
+      }else if(r.status>=500){
+        last=new Error("DexScreener HTTP "+r.status);
+        if(i<retries){await sleep(750*2**i);continue;}
+      }
+      if(!r.ok)throw new Error("DexScreener HTTP "+r.status);
       return await r.json();
-    }catch(e){last=e;if(i<retries)await sleep(300*2**i);}
-    finally{clearTimeout(t);}
+    }catch(e){
+      last=e;
+      if(i<retries && !String(e?.message||e).includes("HTTP 429"))await sleep(750*2**i);
+    }finally{clearTimeout(t);}
   }
   throw last;
 }
