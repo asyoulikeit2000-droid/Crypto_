@@ -1883,6 +1883,9 @@ async function pollMarketData() {
       const rawBook = bookMap.get(symbol);
       if (rawBook) {
         const book = normalizeBook(asset, rawBook);
+        if (book.best_bid && book.best_ask && book.best_bid > 0 && book.best_ask > 0) {
+          state.lastBook = iso();
+        }
         try {
           await insertRows("orderbook_snapshots", [book]);
           state.counts.books++;
@@ -1909,6 +1912,7 @@ async function pollMarketData() {
 
       const trades = (relay.trades || []).filter(t => String(t.symbol).toUpperCase() === symbol);
       if (trades.length) {
+        state.lastTrade = iso();
         const tradeRows = trades.map(t => ({
           asset_id: asset.id,
           exchange: "BYBIT",
