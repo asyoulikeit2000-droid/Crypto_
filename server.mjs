@@ -1832,6 +1832,29 @@ function applyTicker(asset, ticker) {
   state.market.set(asset.id, market);
 }
 
+async function probeLiveMarket() {
+  if (!state.assets.length) throw new Error("No assets available for live market probe");
+  const symbols = state.assets.slice(0, 12).map(a => a.symbol + "USDT");
+  const relay = await relayJson("snapshot", symbols);
+  const trades = Array.isArray(relay.trades) ? relay.trades : [];
+  const books = Array.isArray(relay.books) ? relay.books : [];
+
+  const liveTrades = trades.filter(t => finite(t?.price) > 0 && finite(t?.size) > 0);
+  const liveBooks = books.filter(b => {
+    const bid = Array.isArray(b?.b) && b.b[0] ? finite(b.b[0][0]) : 0;
+    const ask = Array.isArray(b?.a) && b.a[0] ? finite(b.a[0][0]) : 0;
+    return bid > 0 && ask > 0 && ask >= bid;
+  });
+
+  if (!liveTrades.length) throw new Error("Live market probe returned no valid trades");
+  if (!liveBooks.length) throw new Error("Live market probe returned no valid orderbooks");
+
+  state.lastTrade = iso();
+  state.lastBook = iso();
+  state.lastMarketSuccessAt = iso();
+  return { trades: liveTrades.length, books: liveBooks.length, generatedAt: relay.generatedAt || null };
+}
+
 async function pollMarketData() {
   if (!state.assets.length) return;
   const batchSize = 15;
@@ -2291,7 +2314,8 @@ async function boot() {
   await refreshUniverse();
 
   state.bootStage = "live_market";
-  await pollMarketData();
+  const liveProbe = await probeLiveMarket();
+  log("live_market_probe_ok", liveProbe);
 
   const readiness = healthReadiness();
   if (!readiness.universeReady || !readiness.live || !readiness.bookLive || !readiness.supabaseLive) {
@@ -2328,6 +2352,7 @@ async function boot() {
   setInterval(() => trainCalibration(true).catch(e => recordError(e, "training_interval")), TRAIN_INTERVAL_MS);
   setInterval(() => runWalkForwardValidation().catch(e => recordError(e, "validation_interval")), VALIDATION_INTERVAL_MS);
   setInterval(() => pollMarketData().catch(e => recordError(e, "poll_interval")), POLL_MS);
+  setImmediate(() => pollMarketData().catch(e => recordError(e, "initial_poll")));
 
   preRallyScanner.start();
   setImmediate(() => warmResearchState().catch(e => recordError(e, "research_warmup")));
