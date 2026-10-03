@@ -109,7 +109,7 @@ function render(){
     ["Trade feed",h.lastTrade,20000,60000,"Last trade observation processed (not exchange-event age)"],
     ["Order book",h.lastBook,20000,60000,"Last book observation processed (not exchange-event age)"],
     ["Derivatives receive",h.lastDerivReceivedAt,60000,180000,`Funding/OI received now · source event ${ago(h.lastDeriv)}`],
-    [`${String(h.storageBackend||"storage").replaceAll("_"," ").toUpperCase()} persistence`,h.lastStorageSuccessAt,60000,180000,h.storageLive===false?"Storage readiness is not currently passing.":"Last successful database operation (read or write)"]
+    [`${String(h.storageBackend||"storage").replaceAll("_"," ").toUpperCase()} persistence`,h.lastStorageWriteSuccessAt,60000,180000,h.storageLive===false?"Storage readiness is not currently passing.":"Last successful database write"]
   ];
   $("#quality").innerHTML=qualityItems.map(x=>{const f=!dashboardFresh?{label:"UNKNOWN",cls:"warn"}:x[0].endsWith("persistence")&&h.storageLive===false?{label:"DEGRADED",cls:"stale"}:freshness(x[1],x[2],x[3]);return `<div class="card quality-card"><span class="eyebrow">${x[0]}</span><div class="quality-title"><h2>${ago(x[1])}</h2><span class="fresh-chip ${f.cls}">${f.label}</span></div><p class="muted">${x[4]}</p><p class="muted mono">${A(x[1]||"No observation")}</p></div>`}).join("");
   renderScanner();
