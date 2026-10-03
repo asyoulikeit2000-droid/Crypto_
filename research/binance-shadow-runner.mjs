@@ -4,6 +4,7 @@ import { rankStrategyContexts } from "./context-ranking.mjs";
 import { buildMakerOrder, evaluateMakerFill } from "./maker-fill-model.mjs";
 import { fundingCostUsd } from "./exit-accounting.mjs";
 import { resolveExitTrigger, walkMarketExit, actualExitFeesUsd } from "./exit-fill-model.mjs";
+import { summarizeShadowExposure, evaluateShadowAdmission } from "./shadow-portfolio-guard.mjs";
 
 function finite(v, fallback = 0) {
   const n=Number(v);
@@ -57,6 +58,10 @@ export function createBinanceShadowRunner({
   takerFeeRate=0.0005,
   legacyEntrySlippageBps=0.5,
   missingDepthPenaltyBps=10,
+  maxConcurrentPositions=2,
+  maxTotalNotionalPct=1.5,
+  maxDirectionalNotionalPct=1.25,
+  maxAggregateRiskPct=0.004,
   onStatus=()=>{},
   setRepeater=setInterval,
   clearRepeater=clearInterval
@@ -469,6 +474,35 @@ export function createBinanceShadowRunner({
         if (!sizing.allowed) continue;
 
         const side=candidate.action==="BUY" ? "BUY" : "SELL";
+        const exposure=summarizeShadowExposure({
+          openTrials:[...open.values()].map(x=>x.trial),
+          pending:[...pending.values()],
+          equityUsd
+        });
+        const admission=evaluateShadowAdmission({
+          symbol,
+          side,
+          notionalUsd:sizing.notionalUsd,
+          riskUsd:sizing.riskUsd
+        },exposure,{
+          maxConcurrentPositions,
+          maxTotalNotionalPct,
+          maxDirectionalNotionalPct,
+          maxAggregateRiskPct
+        });
+        if(!admission.allowed){
+          onStatus({
+            event:"shadowCandidateBlocked",
+            family:candidate.family,
+            symbol,
+            side,
+            reasons:admission.failed,
+            projected:admission.projected,
+            at:Date.now()
+          });
+          continue;
+        }
+
         const now=Date.now();
         const order=buildMakerOrder({
           family:candidate.family,
@@ -554,10 +588,21 @@ export function createBinanceShadowRunner({
     if (closedAny) await refreshPerformance();
     await evaluatePending();
     await openCandidates();
+    const exposure=summarizeShadowExposure({
+      openTrials:[...open.values()].map(x=>x.trial),
+      pending:[...pending.values()],
+      equityUsd
+    });
     onStatus({
       event:"shadowHeartbeat",
       openTrials:open.size,
       pendingOrders:pending.size,
+      exposure,
+      exposure:summarizeShadowExposure({
+        openTrials:[...open.values()].map(x=>x.trial),
+        pending:[...pending.values()],
+        equityUsd
+      }),
       fillStats:{...fillStats},
       equityUsd,
       peakEquityUsd:peakEquity,
