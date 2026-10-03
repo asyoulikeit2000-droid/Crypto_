@@ -112,8 +112,8 @@ test("expected net floor scales with account equity", () => {
   });
   const account = {
     ...goodAccount(),
-    equityUsd: 5_000,
-    peakEquityUsd: 5_000,
+    equityUsd: 50_000,
+    peakEquityUsd: 50_000,
     freeMarginUsd: 50_000
   };
   const weak = evaluateTradeIntent({ ...goodIntent(), requestedNotionalUsd: 3000, expectedNetUsd: 20 }, account, goodMarket(), config);
