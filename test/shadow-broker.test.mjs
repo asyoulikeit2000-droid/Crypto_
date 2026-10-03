@@ -33,9 +33,9 @@ const intent = {
 };
 
 const account = {
-  equityUsd: 50_000,
-  peakEquityUsd: 50_000,
-  freeMarginUsd: 20_000,
+  equityUsd: 5_000,
+  peakEquityUsd: 5_000,
+  freeMarginUsd: 5_000,
   dailyPnlUsd: 0,
   openPositions: 0,
   killSwitch: false,
