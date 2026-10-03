@@ -1,5 +1,6 @@
 import { routeStrategy } from "../strategy/router.mjs";
 import { sizePosition } from "../strategy/equity-risk.mjs";
+import { rankStrategyContexts } from "./context-ranking.mjs";
 
 function finite(v, fallback = 0) {
   const n=Number(v);
@@ -44,8 +45,8 @@ export function createBinanceShadowRunner({
   maxNotionalEquityMultiple=1,
   evaluationMs=15_000,
   maxHoldMs=90*60*1000,
-  reentryCooldownMs=5*60*1000,
   performanceRefreshMs=5*60*1000,
+  reentryCooldownMs=5*60*1000,
   onStatus=()=>{},
   setRepeater=setInterval,
   clearRepeater=clearInterval
@@ -57,6 +58,8 @@ export function createBinanceShadowRunner({
   const open=new Map();
   const lastClosedAt=new Map();
   const performance={};
+  let performanceProfile={};
+  let rankings=[];
   let timer=null;
   let performanceTimer=null;
   let equityUsd=finite(initialEquityUsd,5000);
@@ -66,12 +69,26 @@ export function createBinanceShadowRunner({
   function key(family,symbol){ return family+":"+symbol; }
 
   async function refreshPerformance() {
-    for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
-      try {
-        performance[family]=await lab.performance({family,recentCount:100,foldCount:5});
-      } catch (error) {
-        onStatus({event:"performanceError",family,error:String(error?.message||error),at:Date.now()});
+    try {
+      if (typeof lab.performanceProfile === "function") {
+        performanceProfile=await lab.performanceProfile({recentCount:100,foldCount:5});
+        for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
+          performance[family]=performanceProfile?.families?.[family] || {};
+        }
+        rankings=rankStrategyContexts(performanceProfile);
+        onStatus({
+          event:"researchRanking",
+          sampleCount:performanceProfile?.sampleCount || 0,
+          top:rankings.slice(0,10),
+          at:Date.now()
+        });
+      } else {
+        for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
+          performance[family]=await lab.performance({family,recentCount:100,foldCount:5});
+        }
       }
+    } catch (error) {
+      onStatus({event:"performanceError",error:String(error?.message||error),at:Date.now()});
     }
     return performance;
   }
@@ -128,6 +145,7 @@ export function createBinanceShadowRunner({
         features,
         btcFeatures:symbol==="BTCUSDT" ? features : btcFeatures,
         performance,
+        performanceProfile,
         researchMode:true
       });
 
@@ -182,7 +200,13 @@ export function createBinanceShadowRunner({
               open_interest:features.open_interest,
               open_interest_change:features.open_interest_change,
               spread_bps:features.spread_bps,
-              feature_snapshot:features
+              feature_snapshot:features,
+              context_evidence:{
+                status:candidate.contextEvidence?.status,
+                reasons:candidate.contextEvidence?.reasons,
+                shrunk_net_bps:candidate.contextEvidence?.shrunkNetBps,
+                execution_eligible:candidate.contextEvidence?.executionEligible
+              }
             }
           });
           open.set(k,{trial,openedAtMs:now});
@@ -241,6 +265,8 @@ export function createBinanceShadowRunner({
       openTrials:[...open.values()].map(x=>x.trial),
       cooldowns:Object.fromEntries([...lastClosedAt.entries()]),
       performance:{...performance},
+      performanceProfile,
+      rankings:[...rankings],
       equityUsd,
       peakEquityUsd:peakEquity
     })

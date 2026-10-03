@@ -15,6 +15,7 @@ export function buildTradeDecision({
   features,
   btcFeatures,
   performance,
+  performanceProfile,
   account,
   portfolio,
   market,
@@ -25,9 +26,10 @@ export function buildTradeDecision({
   policy = {}
 } = {}) {
   const route = routeStrategy({
-    features,
+    features:{...features,symbol:features?.symbol || symbol},
     btcFeatures,
     performance,
+    performanceProfile,
     policy,
     researchMode
   });
@@ -37,7 +39,11 @@ export function buildTradeDecision({
   }
 
   const stats = performance?.[route.selected.family] || {};
-  const conservativeNetBps = finite(route.selected?.promotion?.diagnostics?.lowerConfidenceMeanBps, -Infinity);
+  const globalConservativeNetBps = finite(route.selected?.promotion?.diagnostics?.lowerConfidenceMeanBps, -Infinity);
+  const contextualConservativeNetBps = finite(route.selected?.contextEvidence?.conservativeNetBps, -Infinity);
+  const conservativeNetBps = researchMode
+    ? globalConservativeNetBps
+    : Math.min(globalConservativeNetBps, contextualConservativeNetBps);
   if (!researchMode && !(conservativeNetBps > 0)) {
     return { allowed:false, stage:"edge", reason:"noConservativeEdge", route };
   }

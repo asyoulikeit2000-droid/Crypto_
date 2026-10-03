@@ -31,7 +31,7 @@ const service=createBinanceShadowService({
   db:store.db,
   markHealth:store.markHealth,
   onStatus:event=>{
-    const important=["shadowOpened","shadowClosed","performanceError","openInterestError","tickError"];
+    const important=["shadowOpened","shadowClosed","researchRanking","performanceError","openInterestError","tickError"];
     if (important.includes(event?.event)) {
       console.log(JSON.stringify({service:"binance-shadow-research",...event}));
     }

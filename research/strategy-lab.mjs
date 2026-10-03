@@ -1,4 +1,5 @@
 import { summarizeStrategyTrades } from "../strategy/performance-metrics.mjs";
+import { buildPerformanceProfile } from "./performance-profile.mjs";
 import { evaluateTradeOutcome } from "./outcome-accounting.mjs";
 
 function iso(ms=Date.now()){ return new Date(ms).toISOString(); }
@@ -90,21 +91,32 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
     return db("strategy_trials","GET",params);
   }
 
+  function toTrade(x) {
+    if (!x?.outcome?.valid) return null;
+    return {
+      family:x.family,
+      symbol:x.symbol,
+      regime:x.regime,
+      side:x.side,
+      openedAt:x.opened_at,
+      closedAt:x.closed_at,
+      netBps:x.outcome.netBps,
+      grossBps:x.outcome.grossBps,
+      costBps:x.outcome.costBps
+    };
+  }
+
   async function performance({ family, recentCount=100, foldCount=5 } = {}) {
     const rows=await loadClosed({family});
-    const trades=rows
-      .filter(x=>x.outcome?.valid)
-      .map(x=>({
-        family:x.family,
-        symbol:x.symbol,
-        openedAt:x.opened_at,
-        closedAt:x.closed_at,
-        netBps:x.outcome.netBps,
-        grossBps:x.outcome.grossBps,
-        costBps:x.outcome.costBps
-      }));
+    const trades=rows.map(toTrade).filter(Boolean);
     return summarizeStrategyTrades(trades,{recentCount,foldCount});
   }
 
-  return { openTrial, closeTrial, loadClosed, performance };
+  async function performanceProfile({ recentCount=100, foldCount=5 } = {}) {
+    const rows=await loadClosed({});
+    const trades=rows.map(toTrade).filter(Boolean);
+    return buildPerformanceProfile(trades,{recentCount,foldCount});
+  }
+
+  return { openTrial, closeTrial, loadClosed, performance, performanceProfile };
 }
