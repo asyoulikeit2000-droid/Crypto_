@@ -2,6 +2,7 @@ import { evaluateLiquidityReversion } from "./liquidity-reversion-v1.mjs";
 import { evaluateTrendContinuation } from "./trend-continuation-v1.mjs";
 import { classifyExecutionRegime } from "./regime-classifier.mjs";
 import { evaluateStrategyPromotion } from "./performance-gate.mjs";
+import { evaluateContextEvidence } from "./context-evidence.mjs";
 
 const STRATEGIES = Object.freeze({
   LIQUIDITY_REVERSION_V1: evaluateLiquidityReversion,
@@ -17,6 +18,7 @@ export function routeStrategy({
   features,
   btcFeatures,
   performance = {},
+  performanceProfile = {},
   policy = {},
   researchMode = true
 } = {}) {
@@ -41,14 +43,23 @@ export function routeStrategy({
     if (setup.action === "NO_TRADE") continue;
 
     const promotion = evaluateStrategyPromotion(performance[family] || {}, policy.promotion || {});
-    const eligible = researchMode ? true : promotion.promoted;
+    const contextEvidence = evaluateContextEvidence(performanceProfile,{
+      family,
+      symbol:features?.symbol,
+      regime:regime.regime
+    },policy.context || {});
+    const eligible = researchMode
+      ? !contextEvidence.researchBlocked
+      : promotion.promoted && contextEvidence.executionEligible;
     candidates.push({
       ...setup,
       promotion,
+      contextEvidence,
       eligible,
       rankScore: setup.score
         + Math.max(-15, Math.min(15, finite(performance[family]?.avgNetBps) * 0.75))
         + Math.max(-10, Math.min(10, (finite(performance[family]?.profitFactor, 1) - 1) * 10))
+        + Math.max(-12, Math.min(12, finite(contextEvidence.contextScore) * 0.5))
     });
   }
 
@@ -57,12 +68,18 @@ export function routeStrategy({
     .sort((a,b) => b.rankScore - a.rankScore);
 
   if (!eligible.length) {
+    let reason="noSetup";
+    if (candidates.length) {
+      if (researchMode) reason="contextDegraded";
+      else if (candidates.every(x=>!x.promotion.promoted)) reason="noPromotedStrategy";
+      else reason="noContextEvidence";
+    }
     return {
       action: "NO_TRADE",
       regime,
       selected: null,
       candidates,
-      reason: candidates.length ? "noPromotedStrategy" : "noSetup"
+      reason
     };
   }
 
@@ -72,6 +89,6 @@ export function routeStrategy({
     regime,
     selected,
     candidates,
-    researchOnly: researchMode || !selected.promotion.promoted
+    researchOnly: researchMode || !selected.promotion.promoted || !selected.contextEvidence.executionEligible
   };
 }
