@@ -2215,6 +2215,10 @@ async function dashboardPayload() {
       calibration: state.calibration,
       validation: state.validation,
       model: { id: MODEL_ID, featureVersion: FEATURE_VERSION, horizon: "H1" },
+      storageBackend: primaryStore.backend,
+      storageLive: healthReadiness().storageLive,
+      paperOnly: true,
+      executionEnabled: false,
       horizonResearch: state.horizonResearch,
       tradingProfile: {
         primary: "SWING_POSITIONAL",
