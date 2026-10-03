@@ -1,13 +1,15 @@
 import { evaluateTradeIntent } from "./risk-engine.mjs";
 import { evaluateVenueAlignment, makeClientOrderId } from "./venue-policy.mjs";
 import { transitionOrder } from "./order-state.mjs";
+import { prepareEconomicIntent } from "./economics.mjs";
 
-export function createShadowBroker({ config, onDecision = () => {} } = {}) {
+export function createShadowBroker({ config, costAssumptions = {}, onDecision = () => {} } = {}) {
   let nonce = 0;
 
   return {
     mode: "shadow",
     async submit({ intent, account, market }) {
+      const economicIntent = prepareEconomicIntent(intent, costAssumptions);
       const clientOrderId = makeClientOrderId("shadow", Date.now(), ++nonce);
       const base = {
         clientOrderId,
@@ -15,10 +17,11 @@ export function createShadowBroker({ config, onDecision = () => {} } = {}) {
         createdAt: new Date().toISOString(),
         history: [],
         intent: {
-          symbol: intent?.symbol || null,
-          side: intent?.side || null,
-          requestedNotionalUsd: Number(intent?.requestedNotionalUsd || 0),
-          expectedNetUsd: Number(intent?.expectedNetUsd || 0)
+          symbol: economicIntent?.symbol || null,
+          side: economicIntent?.side || null,
+          requestedNotionalUsd: Number(economicIntent?.requestedNotionalUsd || 0),
+          expectedGrossUsd: Number(economicIntent?.expectedGrossUsd || 0),
+          expectedNetUsd: Number(economicIntent?.expectedNetUsd || 0)
         }
       };
 
@@ -28,7 +31,7 @@ export function createShadowBroker({ config, onDecision = () => {} } = {}) {
         bookExchange: market?.bookExchange || market?.exchange,
         crossVenueAllowed: false
       });
-      const risk = evaluateTradeIntent(intent, account, market, config);
+      const risk = evaluateTradeIntent(economicIntent, account, market, config);
       const failed = [...venue.failed, ...risk.failed];
 
       const order = transitionOrder(
@@ -44,7 +47,8 @@ export function createShadowBroker({ config, onDecision = () => {} } = {}) {
         order,
         failed,
         venue,
-        risk
+        risk,
+        economics: economicIntent.economics
       };
       await onDecision(decision);
       return decision;
