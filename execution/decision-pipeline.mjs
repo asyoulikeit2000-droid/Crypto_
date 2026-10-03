@@ -16,6 +16,7 @@ export function buildTradeDecision({
   btcFeatures,
   performance,
   performanceProfile,
+  executionQualityProfile,
   account,
   portfolio,
   market,
@@ -30,6 +31,7 @@ export function buildTradeDecision({
     btcFeatures,
     performance,
     performanceProfile,
+    executionQualityProfile,
     policy,
     researchMode
   });
