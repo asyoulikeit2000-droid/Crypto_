@@ -7,6 +7,7 @@ import { createIntelligenceEngine } from "./intelligence-engine.mjs";
 import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-gates.mjs";
 import { createPreRallyScanner } from "./scanner/service.mjs";
 import { createTursoCompat, tursoConfigured } from "./storage/turso-store.mjs";
+import { createD1Compat, d1Configured } from "./storage/d1-store.mjs";
 import { startRetentionLoop } from "./storage/retention.mjs";
 import { evaluateDerivativeContext, derivePositionContext } from "./swing-context.mjs";
 
@@ -16,11 +17,13 @@ const HOST = process.env.HOST || "0.0.0.0";
 const RELAY_URL = process.env.MARKET_RELAY_URL || "";
 const RELAY_KEY = process.env.MARKET_RELAY_KEY || "";
 
-if (!tursoConfigured()) throw new Error("Turso credentials not configured");
-const primaryStore = createTursoCompat();
+const PRIMARY_DB = String(process.env.PRIMARY_DB || "cloudflare_d1").toLowerCase();
+const storageConfigured = () => PRIMARY_DB === "cloudflare_d1" ? d1Configured() : tursoConfigured();
+if (!storageConfigured()) throw new Error("Primary database credentials not configured for " + PRIMARY_DB);
+const primaryStore = PRIMARY_DB === "cloudflare_d1" ? createD1Compat() : createTursoCompat();
 await primaryStore.initialize();
-if (!(await primaryStore.healthcheck())) throw new Error("Turso healthcheck failed");
-await primaryStore.markHealth("runtime", "BOOTING", { paperOnly: true, executionEnabled: false });
+if (!(await primaryStore.healthcheck())) throw new Error("Primary database healthcheck failed for " + primaryStore.backend);
+await primaryStore.markHealth("runtime", "BOOTING", { paperOnly: true, executionEnabled: false, backend: primaryStore.backend });
 const FEATURE_VERSION = "v2.1";
 const MODEL_ID = "rules_v3_selective";
 const H4_MODEL_ID = "rules_h4_swing_context_v3";
@@ -160,7 +163,7 @@ function recordError(e, context = null) {
   console.error(JSON.stringify({ ts: iso(), error: message }));
 }
 function requireConfigured() {
-  if (!tursoConfigured()) throw new Error("Turso credentials not configured");
+  if (!storageConfigured()) throw new Error("Primary database not configured for " + PRIMARY_DB);
   if (!RELAY_URL) throw new Error("Market relay not configured");
 }
 
@@ -2268,12 +2271,12 @@ async function healthPayload() {
       tradeStream: readiness.live,
       orderbookStream: readiness.bookLive,
       storage: readiness.storageLive,
-      storageBackend: "turso"
+      storageBackend: primaryStore.backend
     },
     bootStage: state.bootStage,
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     source: "BYBIT_PUBLIC_MARKET_DATA_VIA_CLOUDFLARE",
-    storageBackend: "turso",
+    storageBackend: primaryStore.backend,
     archiveBackend: "r2",
     archive: state.archive,
     retention: state.retention,
@@ -2433,7 +2436,8 @@ async function boot() {
     marketRelay: "cloudflare",
     paperOnly: true,
     executionEnabled: false,
-    archiveMode: state.archive.mode
+    archiveMode: state.archive.mode,
+    storageBackend: primaryStore.backend
   });
   log("engine_ready", {
     assets: state.assets.length,
@@ -2441,7 +2445,8 @@ async function boot() {
     runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
-    storageLive: readiness.storageLive
+    storageLive: readiness.storageLive,
+    storageBackend: primaryStore.backend
   });
   await writeSystemEvent("ENGINE_READY", "info", "runtime", "Crypto Intelligence Engine ready", {
     assets: state.assets.length,
