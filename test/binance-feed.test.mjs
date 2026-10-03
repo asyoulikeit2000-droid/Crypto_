@@ -9,8 +9,8 @@ import {
 test("Binance stream plan uses split public and market endpoints",()=>{
   const p=publicStreams(["BTCUSDT"]);
   const m=marketStreams(["BTCUSDT"]);
-  assert.deepEqual(p,["btcusdt@depth20@100ms","btcusdt@bookTicker"]);
-  assert.deepEqual(m,["btcusdt@aggTrade","btcusdt@markPrice@1s"]);
+  assert.deepEqual(p,["btcusdt@depth20@100ms","btcusdt@bookTicker","btcusdt@aggTrade"]);
+  assert.deepEqual(m,["btcusdt@markPrice@1s"]);
   assert.match(combinedUrl("wss://fstream.binance.com/public/stream?streams=",p),/\/public\/stream\?streams=/);
 });
 
@@ -54,6 +54,8 @@ test("feed builds current Binance split websocket URLs without requiring API cre
   });
   assert.match(feed.urls.public,/\/public\/stream\?streams=/);
   assert.match(feed.urls.market,/\/market\/stream\?streams=/);
-  assert.ok(feed.urls.public.includes("btcusdt%40depth20%40100ms"));
-  assert.ok(feed.urls.market.includes("solusdt%40aggTrade"));
+  assert.ok(feed.urls.public.includes("btcusdt@depth20@100ms"));
+  assert.ok(feed.urls.public.includes("solusdt@aggTrade"));
+  assert.ok(feed.urls.market.includes("solusdt@markPrice@1s"));
+  assert.equal(feed.urls.public.includes("%40"),false);
 });
