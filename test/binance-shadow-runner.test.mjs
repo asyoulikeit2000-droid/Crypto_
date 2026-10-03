@@ -80,6 +80,8 @@ test("shadow runner opens a research trade and closes it at target without live 
   assert.equal(closed[0].exit_reason,"TARGET");
   assert.equal(runner.state().openTrials.length,0);
   assert.equal(runner.state().equityUsd,5010);
+  await runner.tick();
+  assert.equal(opened.length,1);
 });
 
 test("shadow runner does not open when market quality is stale",async()=>{
