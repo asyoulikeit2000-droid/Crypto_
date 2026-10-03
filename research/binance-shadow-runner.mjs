@@ -2,7 +2,8 @@ import { routeStrategy } from "../strategy/router.mjs";
 import { sizePosition } from "../strategy/equity-risk.mjs";
 import { rankStrategyContexts } from "./context-ranking.mjs";
 import { buildMakerOrder, evaluateMakerFill } from "./maker-fill-model.mjs";
-import { executableExitPrice, fundingCostUsd } from "./exit-accounting.mjs";
+import { fundingCostUsd } from "./exit-accounting.mjs";
+import { resolveExitTrigger, walkMarketExit, actualExitFeesUsd } from "./exit-fill-model.mjs";
 
 function finite(v, fallback = 0) {
   const n=Number(v);
@@ -52,6 +53,10 @@ export function createBinanceShadowRunner({
   makerOrderTtlMs=30_000,
   attemptCooldownMs=60_000,
   queueAheadFraction=0.5,
+  makerFeeRate=0.0002,
+  takerFeeRate=0.0005,
+  legacyEntrySlippageBps=0.5,
+  missingDepthPenaltyBps=10,
   onStatus=()=>{},
   setRepeater=setInterval,
   clearRepeater=clearInterval
@@ -97,9 +102,11 @@ export function createBinanceShadowRunner({
             continue;
           }
           const openedAtMs=Date.parse(trial.opened_at);
+          const restoredOpenedAt=Number.isFinite(openedAtMs)?openedAtMs:Date.now();
           open.set(k,{
             trial,
-            openedAtMs:Number.isFinite(openedAtMs)?openedAtMs:Date.now()
+            openedAtMs:restoredOpenedAt,
+            lastExitCheckAt:Math.max(restoredOpenedAt,Date.now()-120_000)
           });
         }
       }
@@ -191,52 +198,133 @@ export function createBinanceShadowRunner({
   async function closeEligible() {
     const now=Date.now();
     let closedAny=false;
-    for (const [k,state] of [...open.entries()]) {
-      const features=bridge.features(state.trial.symbol);
-      const price=executableExitPrice(features,state.trial.side);
-      if (!(price>0)) continue;
-      const long=state.trial.side==="BUY";
-      const stopHit=long ? price<=state.trial.stop_price : price>=state.trial.stop_price;
-      const targetHit=long ? price>=state.trial.target_price : price<=state.trial.target_price;
-      const expired=now-state.openedAtMs>=maxHoldMs;
-      if (!stopHit && !targetHit && !expired) continue;
 
-      const exitReason=stopHit ? "STOP" : targetHit ? "TARGET" : "TIME";
+    for (const [k,state] of [...open.entries()]) {
+      const trial=state.trial;
+      const features=bridge.features(trial.symbol);
+      const since=finite(state.lastExitCheckAt,state.openedAtMs);
+      const trades=bridge.tradesSince(trial.symbol,since);
+      const expired=now-state.openedAtMs>=maxHoldMs;
+      const trigger=resolveExitTrigger({
+        positionSide:trial.side,
+        stopPrice:trial.stop_price,
+        targetPrice:trial.target_price,
+        trades,
+        sinceMs:since,
+        untilMs:now,
+        bestBid:features?.best_bid,
+        bestAsk:features?.best_ask,
+        expired
+      });
+      state.lastExitCheckAt=now;
+      if (!trigger.triggered) continue;
+
       try {
+        const positionQty=finite(trial.notional_usd) / Math.max(1e-12,finite(trial.entry_price));
+        let exitPrice;
+        let exitLiquidity=trigger.exitLiquidity || "TAKER";
+        let depthFill=null;
+
+        if (trigger.exitReason==="TARGET") {
+          exitPrice=finite(trial.target_price);
+          exitLiquidity="MAKER";
+        } else {
+          const fallback=trial.side==="BUY"
+            ? finite(features?.best_bid,features?.price)
+            : finite(features?.best_ask,features?.price);
+          depthFill=walkMarketExit({
+            positionSide:trial.side,
+            positionQty,
+            book:typeof bridge.bookSnapshot==="function" ? bridge.bookSnapshot(trial.symbol) : null,
+            fallbackPrice:fallback,
+            missingDepthPenaltyBps
+          });
+          if (!depthFill.valid || !(depthFill.exitPrice>0)) {
+            onStatus({
+              event:"exitFillError",
+              family:trial.family,
+              symbol:trial.symbol,
+              exitReason:trigger.exitReason,
+              reason:depthFill.reason,
+              at:now
+            });
+            continue;
+          }
+          exitPrice=depthFill.exitPrice;
+          exitLiquidity="TAKER";
+        }
+
         const fundingEvents=typeof bridge.fundingEventsSince==="function"
-          ? bridge.fundingEventsSince(state.trial.symbol,state.openedAtMs,now)
+          ? bridge.fundingEventsSince(trial.symbol,state.openedAtMs,trigger.at||now)
           : [];
         const actualFundingUsd=fundingCostUsd({
-          side:state.trial.side,
-          notionalUsd:state.trial.notional_usd,
+          side:trial.side,
+          notionalUsd:trial.notional_usd,
           openedAtMs:state.openedAtMs,
-          closedAtMs:now,
+          closedAtMs:trigger.at||now,
           events:fundingEvents,
-          fallbackRate:state.trial?.metadata?.funding_rate ?? state.trial?.metadata?.feature_snapshot?.funding_rate,
-          fallbackFundingTime:state.trial?.metadata?.next_funding_time ?? state.trial?.metadata?.feature_snapshot?.next_funding_time
+          fallbackRate:trial?.metadata?.funding_rate ?? trial?.metadata?.feature_snapshot?.funding_rate,
+          fallbackFundingTime:trial?.metadata?.next_funding_time ?? trial?.metadata?.feature_snapshot?.next_funding_time
         });
-        const closed=await lab.closeTrial(state.trial,{
-          exitPrice:price,
+
+        const exitNotionalUsd=positionQty*exitPrice;
+        const entryLiquidity=trial?.metadata?.entry_fill_type==="MAKER_SIMULATED" ? "MAKER" : "TAKER";
+        const actualFeesUsd=actualExitFeesUsd({
+          entryNotionalUsd:trial.notional_usd,
+          exitNotionalUsd,
+          entryLiquidity,
+          exitLiquidity,
+          makerFeeRate,
+          takerFeeRate
+        });
+
+        const legacyEntrySlippageUsd=entryLiquidity==="MAKER"
+          ? 0
+          : trial.notional_usd * Math.max(0,finite(legacyEntrySlippageBps))/10_000;
+
+        const closed=await lab.closeTrial(trial,{
+          exitPrice,
+          actualFeesUsd,
+          actualSlippageUsd:legacyEntrySlippageUsd,
           actualFundingUsd,
-          exitReason,
-          closedAt:new Date(now).toISOString()
+          exitReason:trigger.exitReason,
+          closedAt:new Date(trigger.at||now).toISOString(),
+          metadataDetails:{
+            exit_fill_type:exitLiquidity==="MAKER" ? "MAKER_SIMULATED" : "TAKER_DEPTH_SIMULATED",
+            exit_trigger_reason:trigger.reason || trigger.exitReason,
+            exit_observed_trade_price:trigger.observedTradePrice ?? null,
+            exit_best_price:depthFill?.bestPrice ?? null,
+            exit_impact_bps:depthFill?.impactBps ?? 0,
+            exit_visible_filled_qty:depthFill?.visibleFilledQty ?? null,
+            exit_synthetic_filled_qty:depthFill?.syntheticFilledQty ?? 0,
+            exit_depth_fully_visible:depthFill?.fullyVisible ?? true,
+            actual_fees_usd:actualFeesUsd,
+            actual_funding_usd:actualFundingUsd,
+            actual_slippage_usd:legacyEntrySlippageUsd
+          }
         });
+
         open.delete(k);
-        lastClosedAt.set(k,now);
+        lastClosedAt.set(k,trigger.at||now);
         equityUsd += finite(closed?.outcome?.netUsd);
         peakEquity=Math.max(peakEquity,equityUsd);
         closedAny=true;
+
         onStatus({
           event:"shadowClosed",
           family:closed.family,
           symbol:closed.symbol,
-          exitReason,
+          exitReason:trigger.exitReason,
+          exitLiquidity,
           netUsd:closed.outcome?.netUsd,
           netBps:closed.outcome?.netBps,
+          feesUsd:actualFeesUsd,
           fundingUsd:actualFundingUsd,
-          exitPrice:price,
+          exitPrice,
+          exitImpactBps:depthFill?.impactBps ?? 0,
+          visibleDepthComplete:depthFill?.fullyVisible ?? true,
           equityUsd,
-          at:now
+          at:trigger.at||now
         });
       } catch (error) {
         onStatus({event:"closeError",key:k,error:String(error?.message||error),at:now});
@@ -322,7 +410,8 @@ export function createBinanceShadowRunner({
         });
 
         pending.delete(k);
-        open.set(k,{trial,openedAtMs:finite(result.fillAt,now)});
+        const filledAt=finite(result.fillAt,now);
+        open.set(k,{trial,openedAtMs:filledAt,lastExitCheckAt:filledAt});
         lastAttemptAt.set(k,now);
         fillStats.filled++;
 
