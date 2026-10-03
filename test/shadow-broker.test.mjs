@@ -28,7 +28,7 @@ const intent = {
   requestedNotionalUsd: 3000,
   effectiveLeverage: 2,
   expectedGrossUsd: 13,
-  maxLossAtStopUsd: 80,
+  maxLossAtStopUsd: 10,
   rewardRisk: 1.5
 };
 
