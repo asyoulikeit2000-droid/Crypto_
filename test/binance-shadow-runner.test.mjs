@@ -114,6 +114,12 @@ test("shadow runner requires a plausible maker fill before opening a research tr
   assert.equal(opened[0].entry_price,order.limitPrice);
 
   solPrice=opened[0].target_price*1.001;
+  trades.push({
+    t:order.submittedAt+2000,
+    price:opened[0].target_price*1.0001,
+    qty:1,
+    side:"BUY"
+  });
   await runner.tick();
   assert.equal(closed.length,1);
   assert.equal(closed[0].exit_reason,"TARGET");
