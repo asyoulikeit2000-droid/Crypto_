@@ -26,10 +26,11 @@ export function loadExecutionConfig(env = process.env) {
     maxNotionalUsd: finitePositive(env.MAX_POSITION_NOTIONAL_USD, 5_000),
     maxLeverage: finitePositive(env.MAX_EFFECTIVE_LEVERAGE, 3),
     minExpectedNetUsd: finitePositive(env.MIN_EXPECTED_NET_USD, 6.5),
+    minExpectedNetEquityPct: finitePositive(env.MIN_EXPECTED_NET_EQUITY_PCT, 0.001),
     maxSingleTradeRiskPct: finitePositive(env.MAX_SINGLE_TRADE_RISK_PCT, 0.0025),
     maxDailyLossPct: finitePositive(env.MAX_DAILY_LOSS_PCT, 0.015),
     maxDrawdownPct: finitePositive(env.MAX_DRAWDOWN_PCT, 0.05),
-    maxOpenPositions: Math.max(1, Math.floor(finitePositive(env.MAX_OPEN_POSITIONS, 3))),
+    maxOpenPositions: Math.max(1, Math.floor(finitePositive(env.MAX_OPEN_POSITIONS, 2))),
     maxSpreadBps: finitePositive(env.MAX_SPREAD_BPS, 6),
     maxMarketDataAgeMs: finitePositive(env.MAX_MARKET_DATA_AGE_MS, 3_000)
   };
@@ -78,6 +79,7 @@ export function safeExecutionSummary(config) {
       maxNotionalUsd: config.maxNotionalUsd,
       maxLeverage: config.maxLeverage,
       minExpectedNetUsd: config.minExpectedNetUsd,
+      minExpectedNetEquityPct: config.minExpectedNetEquityPct,
       maxSingleTradeRiskPct: config.maxSingleTradeRiskPct,
       maxDailyLossPct: config.maxDailyLossPct,
       maxDrawdownPct: config.maxDrawdownPct,
