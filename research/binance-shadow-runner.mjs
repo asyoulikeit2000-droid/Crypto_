@@ -44,6 +44,7 @@ export function createBinanceShadowRunner({
   maxNotionalEquityMultiple=1,
   evaluationMs=15_000,
   maxHoldMs=90*60*1000,
+  reentryCooldownMs=5*60*1000,
   performanceRefreshMs=5*60*1000,
   onStatus=()=>{},
   setRepeater=setInterval,
@@ -54,6 +55,7 @@ export function createBinanceShadowRunner({
 
   const wanted=[...new Set(symbols.map(x=>String(x).toUpperCase()))];
   const open=new Map();
+  const lastClosedAt=new Map();
   const performance={};
   let timer=null;
   let performanceTimer=null;
@@ -97,6 +99,7 @@ export function createBinanceShadowRunner({
           closedAt:new Date(now).toISOString()
         });
         open.delete(k);
+        lastClosedAt.set(k,now);
         equityUsd += finite(closed?.outcome?.netUsd);
         peakEquity=Math.max(peakEquity,equityUsd);
         onStatus({
@@ -130,7 +133,9 @@ export function createBinanceShadowRunner({
 
       for (const candidate of routed.candidates || []) {
         const k=key(candidate.family,symbol);
+        const lastExit=finite(lastClosedAt.get(k),0);
         if (open.has(k) || candidate.action==="NO_TRADE") continue;
+        if (lastExit && Date.now()-lastExit < reentryCooldownMs) continue;
 
         const plan=stopPlan(features,candidate.family);
         const sizing=sizePosition({
@@ -234,6 +239,7 @@ export function createBinanceShadowRunner({
       started,
       symbols:wanted,
       openTrials:[...open.values()].map(x=>x.trial),
+      cooldowns:Object.fromEntries([...lastClosedAt.entries()]),
       performance:{...performance},
       equityUsd,
       peakEquityUsd:peakEquity
