@@ -26,7 +26,7 @@ export function buildTradeDecision({
   policy = {}
 } = {}) {
   const route = routeStrategy({
-    features,
+    features:{...features,symbol:features?.symbol || symbol},
     btcFeatures,
     performance,
     performanceProfile,
