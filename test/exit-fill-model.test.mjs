@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { targetMakerFill, walkMarketExit, actualExitFeesUsd } from "../research/exit-fill-model.mjs";
+import { targetMakerFill, resolveExitTrigger, walkMarketExit, actualExitFeesUsd } from "../research/exit-fill-model.mjs";
 
 test("long maker target requires an aggressive buy trade through the target",()=>{
   const no=targetMakerFill({
@@ -66,4 +66,39 @@ test("fees distinguish maker target from taker stop",()=>{
   assert.ok(takerExit>makerExit*0.9);
   assert.equal(Number(makerExit.toFixed(4)),1.608);
   assert.equal(Number(takerExit.toFixed(4)),2.78);
+});
+
+
+test("exit trigger follows observed trade sequence instead of checking barriers out of order",()=>{
+  const r=resolveExitTrigger({
+    positionSide:"BUY",
+    stopPrice:99,
+    targetPrice:101,
+    sinceMs:0,
+    untilMs:10000,
+    trades:[
+      {t:3000,price:101.02,qty:1,side:"BUY"},
+      {t:5000,price:98.9,qty:1,side:"SELL"}
+    ],
+    bestBid:98.9,
+    expired:false
+  });
+  assert.equal(r.triggered,true);
+  assert.equal(r.exitReason,"TARGET");
+  assert.equal(r.exitLiquidity,"MAKER");
+  assert.equal(r.at,3000);
+});
+
+test("book crossing can trigger a stop when no trade event was retained",()=>{
+  const r=resolveExitTrigger({
+    positionSide:"SELL",
+    stopPrice:101,
+    targetPrice:98,
+    trades:[],
+    bestAsk:101.2,
+    untilMs:5000
+  });
+  assert.equal(r.triggered,true);
+  assert.equal(r.exitReason,"STOP");
+  assert.equal(r.exitLiquidity,"TAKER");
 });
