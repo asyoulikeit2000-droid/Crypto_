@@ -82,6 +82,7 @@ test("router can research a setup before promotion but blocks it for execution",
 test("router allows only a promoted strategy outside research mode", () => {
   const features = {
     ...goodQuality,
+    symbol:"BTCUSDT",
     return_1m: 0.0002,
     return_5m: 0.0012,
     return_15m: 0.003,
@@ -103,10 +104,17 @@ test("router allows only a promoted strategy outside research mode", () => {
     costCoverageRatio: 1.4,
     symbolConcentrationPct: 0.4
   };
+  const performanceProfile={
+    families:{TREND_CONTINUATION_V1:stats},
+    symbols:{"TREND_CONTINUATION_V1|BTCUSDT":stats},
+    regimes:{"TREND_CONTINUATION_V1|TREND_UP":stats},
+    contexts:{"TREND_CONTINUATION_V1|BTCUSDT|TREND_UP":stats}
+  };
   const routed = routeStrategy({
     features,
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{ TREND_CONTINUATION_V1: stats },
+    performanceProfile,
     researchMode:false
   });
   assert.equal(routed.action, "BUY");
