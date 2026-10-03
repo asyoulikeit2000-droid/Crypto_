@@ -3,6 +3,12 @@ function finite(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+export function minimumExpectedNetUsd(config, equityUsd) {
+  const absoluteFloor = finite(config?.minExpectedNetUsd, Infinity);
+  const equityFloor = finite(equityUsd) * finite(config?.minExpectedNetEquityPct, 0);
+  return Math.max(absoluteFloor, equityFloor);
+}
+
 export function evaluateTradeIntent(intent, account, market, config) {
   const failed = [];
   const equityUsd = finite(account?.equityUsd);
@@ -35,7 +41,8 @@ export function evaluateTradeIntent(intent, account, market, config) {
   if (!(leverage > 0) || leverage > finite(config?.maxLeverage, 1)) failed.push("leverageLimit");
   if (openPositions >= Math.max(1, Math.floor(finite(config?.maxOpenPositions, 1)))) failed.push("openPositionLimit");
 
-  if (expectedNetUsd < finite(config?.minExpectedNetUsd, Infinity)) failed.push("expectedNetTooLow");
+  const expectedNetFloorUsd = minimumExpectedNetUsd(config, equityUsd);
+  if (expectedNetUsd < expectedNetFloorUsd) failed.push("expectedNetTooLow");
   if (rewardRisk < 1.25) failed.push("rewardRiskTooLow");
 
   const tradeRiskLimitUsd = equityUsd * finite(config?.maxSingleTradeRiskPct, 0);
@@ -56,6 +63,7 @@ export function evaluateTradeIntent(intent, account, market, config) {
     metrics: {
       equityUsd,
       expectedNetUsd,
+      expectedNetFloorUsd,
       maxLossAtStopUsd,
       tradeRiskLimitUsd,
       dailyLossLimitUsd,
