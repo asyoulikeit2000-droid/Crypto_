@@ -29,7 +29,7 @@ export function rankStrategyContexts(profile = {}, executionProfile = {}, policy
     const stats=evidence.stats?.context || {};
 
     const economicEligible=evidence.executionEligible;
-    const executionEligible=economicEligible && !execution.executionBlocked;
+    const executionEligible=economicEligible && execution.status==="HEALTHY";
     const fillRate=executionStats.fillRate==null?null:finite(executionStats.fillRate);
     const executionScore=
       executionStats.completedCount >= 5
