@@ -81,6 +81,9 @@ const state = {
   lastMarketSuccessAt: null,
   lastStorageSuccessAt: null,
   lastStorageFailureAt: null,
+  lastStorageWriteSuccessAt: null,
+  lastStorageWriteFailureAt: null,
+  storageWriteFailed: false,
   lastQualityWrite: 0,
   lastSignalAt: new Map(),
   recentSignals: [],
@@ -174,9 +177,17 @@ async function db(table, method = "GET", params = {}, body, extraHeaders = {}) {
   try {
     const result = await primaryStore.db(table, method, params, body, extraHeaders);
     state.lastStorageSuccessAt = iso();
+    if (String(method).toUpperCase() !== "GET") {
+      state.lastStorageWriteSuccessAt = state.lastStorageSuccessAt;
+      state.storageWriteFailed = false;
+    }
     return result;
   } catch (e) {
     state.lastStorageFailureAt = iso();
+    if (String(method).toUpperCase() !== "GET") {
+      state.lastStorageWriteFailureAt = state.lastStorageFailureAt;
+      state.storageWriteFailed = true;
+    }
     throw e;
   }
 }
@@ -2090,6 +2101,8 @@ async function dashboardPayload() {
       storageLive: readiness.storageLive,
       lastStorageSuccessAt: state.lastStorageSuccessAt,
       lastStorageFailureAt: state.lastStorageFailureAt,
+      lastStorageWriteSuccessAt: state.lastStorageWriteSuccessAt,
+      lastStorageWriteFailureAt: state.lastStorageWriteFailureAt,
       paperOnly: true,
       executionEnabled: false,
       horizonResearch: state.horizonResearch,
@@ -2136,9 +2149,13 @@ function healthReadiness() {
   const storageSuccessMs = state.lastStorageSuccessAt ? Date.parse(state.lastStorageSuccessAt) : 0;
   const storageFailureMs = state.lastStorageFailureAt ? Date.parse(state.lastStorageFailureAt) : 0;
   const storageLive = Boolean(
-    storageSuccessMs &&
+    storageSuccessMs && now >= storageSuccessMs &&
     now - storageSuccessMs < 60000 &&
-    storageSuccessMs >= storageFailureMs
+    storageSuccessMs >= storageFailureMs &&
+    !state.storageWriteFailed &&
+    state.lastStorageWriteSuccessAt &&
+    now >= Date.parse(state.lastStorageWriteSuccessAt) &&
+    now - Date.parse(state.lastStorageWriteSuccessAt) < 60000
   );
   const ready = state.ready && universeReady && live && bookLive && storageLive && !state.killSwitch;
   return { ready, live, bookLive, universeReady, storageLive };
@@ -2178,6 +2195,8 @@ async function healthPayload() {
     lastMarketSuccessAt: state.lastMarketSuccessAt,
     lastStorageSuccessAt: state.lastStorageSuccessAt,
     lastStorageFailureAt: state.lastStorageFailureAt,
+    lastStorageWriteSuccessAt: state.lastStorageWriteSuccessAt,
+    lastStorageWriteFailureAt: state.lastStorageWriteFailureAt,
     assets: state.assets.length,
     counts: state.counts,
     lastTrade: state.lastTrade,

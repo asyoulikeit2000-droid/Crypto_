@@ -5,9 +5,14 @@ export function d1Configured(){
   return Boolean(relayUrl&&relayToken);
 }
 
+let writesBlockedUntil = 0;
+const quotaError = message => /exceeded.*(?:daily|free tier).*limit/i.test(message);
+
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 async function request(path,{method="GET",body}={},attempts=4){
+  const isWrite = path === "/kv" && String(body?.method || "GET").toUpperCase() !== "GET";
+  if (isWrite && Date.now() < writesBlockedUntil) throw new Error("D1 daily write quota exhausted; writes paused until " + new Date(writesBlockedUntil).toISOString());
   let lastError;
   for(let attempt=1;attempt<=attempts;attempt++){
     const controller=new AbortController();
@@ -28,6 +33,12 @@ async function request(path,{method="GET",body}={},attempts=4){
       try{parsed=text?JSON.parse(text):null}catch{}
       if(response.ok)return parsed;
       const message="D1 relay HTTP "+response.status+" "+(parsed?.error||text||"");
+      if (quotaError(message)) {
+        if (isWrite) {
+          const reset = new Date(); reset.setUTCHours(24,0,0,0); writesBlockedUntil = reset.getTime();
+        }
+        throw new Error(message);
+      }
       if(response.status===429||response.status>=500){
         lastError=new Error(message);
         if(attempt<attempts){await sleep(250*attempt);continue;}
@@ -36,7 +47,7 @@ async function request(path,{method="GET",body}={},attempts=4){
     }catch(error){
       lastError=error;
       const transient=/fetch failed|aborted|timeout|ECONNRESET|EAI_AGAIN|ENOTFOUND|HTTP 429|HTTP 5\d\d/i.test(String(error?.message||error));
-      if(!transient||attempt===attempts)throw error;
+      if(quotaError(String(error?.message||error))||!transient||attempt===attempts)throw error;
       await sleep(250*attempt);
     }finally{clearTimeout(timer);}
   }
