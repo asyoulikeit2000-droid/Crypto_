@@ -77,6 +77,12 @@ setInterval(()=>{
     expectedConnections:s.lastFeedStatus?.expectedConnections ?? null,
     symbolFreshness,
     openTrials:s.runner?.openTrials?.length || 0,
+    pendingOrders:s.runner?.pendingOrders?.length || 0,
+    makerAttempts:s.runner?.executionQualityProfile?.attempts?.attemptCount || 0,
+    completedMakerAttempts:s.runner?.executionQualityProfile?.attempts?.completedCount || 0,
+    makerFillRate:s.runner?.executionQualityProfile?.attempts?.fillRate ?? null,
+    makerFilledPerDay:s.runner?.executionQualityProfile?.attempts?.filledPerDay || 0,
+    fillStats:s.runner?.fillStats || {},
     shadowEquityUsd:s.runner?.equityUsd ?? null
   }));
 },60000);
