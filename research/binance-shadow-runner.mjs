@@ -68,6 +68,42 @@ export function createBinanceShadowRunner({
 
   function key(family,symbol){ return family+":"+symbol; }
 
+  async function restoreState() {
+    try {
+      if (typeof lab.accountingState === "function") {
+        const accounting=await lab.accountingState({initialEquityUsd});
+        equityUsd=finite(accounting?.equityUsd,initialEquityUsd);
+        peakEquity=Math.max(equityUsd,finite(accounting?.peakEquityUsd,equityUsd));
+      }
+      if (typeof lab.loadOpen === "function") {
+        const rows=await lab.loadOpen({});
+        for (const trial of rows || []) {
+          if (!trial?.family || !trial?.symbol || !trial?.trial_id) continue;
+          const k=key(trial.family,trial.symbol);
+          if (open.has(k)) {
+            onStatus({event:"recoveryDuplicateOpen",key:k,trialId:trial.trial_id,at:Date.now()});
+            continue;
+          }
+          const openedAtMs=Date.parse(trial.opened_at);
+          open.set(k,{
+            trial,
+            openedAtMs:Number.isFinite(openedAtMs)?openedAtMs:Date.now()
+          });
+        }
+      }
+      onStatus({
+        event:"shadowRecovered",
+        openTrials:open.size,
+        equityUsd,
+        peakEquityUsd:peakEquity,
+        at:Date.now()
+      });
+    } catch (error) {
+      onStatus({event:"recoveryError",error:String(error?.message||error),at:Date.now()});
+      throw error;
+    }
+  }
+
   async function refreshPerformance() {
     try {
       if (typeof lab.performanceProfile === "function") {
@@ -244,6 +280,7 @@ export function createBinanceShadowRunner({
   async function start() {
     if (started) return;
     started=true;
+    await restoreState();
     await refreshPerformance();
     await tick();
     timer=setRepeater(()=>tick().catch(error=>onStatus({event:"tickError",error:String(error?.message||error),at:Date.now()})),evaluationMs);
@@ -258,7 +295,7 @@ export function createBinanceShadowRunner({
   }
 
   return {
-    start,stop,tick,refreshPerformance,
+    start,stop,tick,restoreState,refreshPerformance,
     state:()=>({
       started,
       symbols:wanted,
