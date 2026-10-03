@@ -35,7 +35,8 @@ function render(){
   $("#dot").style.background=live?"var(--green)":"var(--amber)";
   $("#status").textContent=live?"LIVE TELEMETRY":"STALE TELEMETRY";
   $("#topStatus").textContent=live?"LIVE":"STALE";
-  $("#copy").textContent=live?"Live market telemetry is being received.":"No recent trade event passed the freshness gate.";
+  const storageLabel=String(h.storageBackend||"unknown").replaceAll("_"," ").toUpperCase();
+  $("#copy").textContent=live?`Live market telemetry · ${storageLabel} persistence · paper-only research.`:"No recent trade event passed the freshness gate.";
   $("#updated").textContent=new Date().toLocaleTimeString();
   $("#assets").textContent=h.assets??0;
   $("#trades").textContent=(h.counts?.trades||0).toLocaleString();
@@ -80,7 +81,8 @@ function render(){
   $("#providers").innerHTML=(D.providers||[]).slice(0,8).map(p=>`<div class="provider-row"><div><b>${A(p.provider)}</b><small>${A(p.dataset)}</small></div><span class="provider-status ${String(p.status).toLowerCase()}">${A(p.status)}</span><span class="muted">${ago(p.checked_at)}</span></div>`).join("")||"<div class=\"empty\">No provider status.</div>";
 
   const sig=D.signals||[];
-  const actionable=sig.filter(s=>s.model_id==="rules_v2_adaptive"&&String(s.risk_state||"").toUpperCase()!=="SHADOW");
+  const activeModelId=h.model?.id||"rules_v3_selective";
+  const actionable=sig.filter(s=>s.model_id===activeModelId&&String(s.risk_state||"").toUpperCase()!=="SHADOW");
   $("#cards").innerHTML=signalReady&&actionable.length?actionable.slice(0,6).map(s=>`<div class="card signal-card"><div class="card-top"><b>${A(K(s,"symbol","asset_id"))}</b>${badge(K(s,"action","signal","side"))}</div><div class="price">${K(s,"entry_price","entry")!=null?"$"+num(K(s,"entry_price","entry")):"—"}</div><div class="muted">${K(s,"probability","p_t1")!=null?num(Number(K(s,"probability","p_t1"))*100,2)+"% probability":"Probability pending"}</div><hr><div class="muted">${A(K(s,"reasons","reason")||"Validated evidence set.")}</div></div>`).join(""):`<div class="locked-state"><div class="lock-icon">◈</div><div><b>No actionable signal yet</b><p>${signalReady?"Waiting for the next qualified setup.":"Historical candidates are retained for shadow validation, but entries are blocked until all model gates pass."}</p></div></div>`;
 
   $("#signalNotice").innerHTML=signalReady?`<b class="up">H1 production-actionable.</b> ${actionable.length} qualified H1 record(s) shown; H4/D1 remain shadow-only.`:(statReady?'<b class="down">H1 robustness locked.</b> Base validation passed, but time-slice robustness is insufficient; records remain research-only.':'<b class="down">Shadow mode.</b> These are research records, not approved entries.');
@@ -101,7 +103,7 @@ function render(){
     ["Trade feed",h.lastTrade,20000,60000,"Last accepted trade event"],
     ["Order book",h.lastBook,20000,60000,"Last valid book snapshot"],
     ["Derivatives receive",h.lastDerivReceivedAt,60000,180000,`Funding/OI received now · source event ${ago(h.lastDeriv)}`],
-    ["Turso persistence",h.lastStorageSuccessAt,60000,180000,"Last successful operational DB write"]
+    [`${String(h.storageBackend||"storage").replaceAll("_"," ").toUpperCase()} persistence`,h.lastStorageSuccessAt,60000,180000,h.storageLive===false?"Storage readiness is not currently passing.":"Last successful operational DB write"]
   ];
   $("#quality").innerHTML=qualityItems.map(x=>{const f=freshness(x[1],x[2],x[3]);return `<div class="card quality-card"><span class="eyebrow">${x[0]}</span><div class="quality-title"><h2>${ago(x[1])}</h2><span class="fresh-chip ${f.cls}">${f.label}</span></div><p class="muted">${x[4]}</p><p class="muted mono">${A(x[1]||"No observation")}</p></div>`}).join("");
   renderScanner();
