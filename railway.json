@@ -5,9 +5,8 @@
     "buildCommand": "npm install --omit=dev && npm run check:migration && npm test"
   },
   "deploy": {
-    "startCommand": "node server.mjs",
-    "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 240,
-    "restartPolicyType": "ON_FAILURE"
+    "startCommand": "node binance-shadow-worker.mjs",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5
   }
 }
