@@ -1,4 +1,5 @@
 import { createTursoCompat } from "./storage/turso-store.mjs";
+import { createShadowHttpStore } from "./storage/shadow-http-store.mjs";
 import { createBinanceShadowService } from "./research/binance-shadow-service.mjs";
 
 function enabled(value) {
@@ -15,8 +16,16 @@ if (!enabled(process.env.SHADOW_RESEARCH_ENABLED)) {
   process.exit(0);
 }
 
-const store=createTursoCompat();
-await store.initialize();
+const useRemoteStore=Boolean(process.env.SHADOW_STORE_URL && process.env.SHADOW_STORE_TOKEN);
+const store=useRemoteStore
+  ? createShadowHttpStore({
+      baseUrl:process.env.SHADOW_STORE_URL,
+      token:process.env.SHADOW_STORE_TOKEN
+    })
+  : createTursoCompat();
+
+if (typeof store.initialize === "function") await store.initialize();
+if (!(await store.healthcheck())) throw new Error("shadow research storage healthcheck failed");
 
 const service=createBinanceShadowService({
   db:store.db,
@@ -46,7 +55,8 @@ console.log("shadow_worker_running "+JSON.stringify({
   service:"binance-shadow-research",
   status:"RUNNING",
   liveOrdersPossible:false,
-  symbols:service.state().symbols
+  symbols:service.state().symbols,
+  storageBackend:store.backend
 }));
 
 setInterval(()=>{
