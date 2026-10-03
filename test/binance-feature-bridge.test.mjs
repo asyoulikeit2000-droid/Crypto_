@@ -24,3 +24,22 @@ test("Binance bridge produces same-venue features with funding and OI",()=>{
   assert.equal(Number(f.open_interest_change.toFixed(3)),0.01);
   assert.equal(f.data_fresh,true);
 });
+
+
+test("Binance bridge records a funding event when next funding time rolls forward",()=>{
+  const intelligence=createIntelligenceEngine();
+  const b=createBinanceFeatureBridge({intelligence});
+  const base=1_700_000_000_000;
+  b.onMark({
+    symbol:"BTCUSDT",t:base,
+    markPrice:100,fundingRate:0.0001,nextFundingTime:base+10_000
+  });
+  b.onMark({
+    symbol:"BTCUSDT",t:base+10_100,
+    markPrice:100.1,fundingRate:0.0002,nextFundingTime:base+8*60*60*1000
+  });
+  const events=b.fundingEventsSince("BTCUSDT",base,base+20_000);
+  assert.equal(events.length,1);
+  assert.equal(events[0].t,base+10_000);
+  assert.equal(events[0].rate,0.0001);
+});
