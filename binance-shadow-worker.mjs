@@ -1,6 +1,7 @@
 import { createTursoCompat } from "./storage/turso-store.mjs";
 import { createShadowHttpStore } from "./storage/shadow-http-store.mjs";
 import { createBinanceShadowService } from "./research/binance-shadow-service.mjs";
+import { resolveBinanceResearchUniverse } from "./market/binance-research-universe.mjs";
 
 function enabled(value) {
   return String(value||"").trim().toLowerCase()==="true";
@@ -27,9 +28,44 @@ const store=useRemoteStore
 if (typeof store.initialize === "function") await store.initialize();
 if (!(await store.healthcheck())) throw new Error("shadow research storage healthcheck failed");
 
+let runtimeEnv={...process.env};
+if (enabled(process.env.SHADOW_DYNAMIC_UNIVERSE_ENABLED)) {
+  try {
+    const ranked=await resolveBinanceResearchUniverse({
+      maxAssets:Number(process.env.SHADOW_UNIVERSE_MAX_ASSETS || 10),
+      pinned:String(process.env.SHADOW_UNIVERSE_PINNED || "BTCUSDT").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean),
+      minQuoteVolumeUsd:Number(process.env.SHADOW_UNIVERSE_MIN_QUOTE_VOLUME_USD || 25000000),
+      maxSpreadBps:Number(process.env.SHADOW_UNIVERSE_MAX_SPREAD_BPS || 8)
+    });
+    if (ranked.length >= 4) {
+      runtimeEnv.SHADOW_SYMBOLS=ranked.map(x=>x.symbol).join(",");
+      console.log("shadow_universe_selected "+JSON.stringify({
+        service:"binance-shadow-research",
+        dynamic:true,
+        symbols:ranked.map(x=>x.symbol),
+        rankings:ranked
+      }));
+    } else {
+      console.log("shadow_universe_fallback "+JSON.stringify({
+        service:"binance-shadow-research",
+        reason:"too_few_dynamic_symbols",
+        dynamicCount:ranked.length,
+        fallbackSymbols:String(process.env.SHADOW_SYMBOLS||"BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT").split(",")
+      }));
+    }
+  } catch (error) {
+    console.log("shadow_universe_fallback "+JSON.stringify({
+      service:"binance-shadow-research",
+      reason:"dynamic_universe_error",
+      error:String(error?.message||error).slice(0,300)
+    }));
+  }
+}
+
 const service=createBinanceShadowService({
   db:store.db,
   markHealth:store.markHealth,
+  env:runtimeEnv,
   onStatus:event=>{
     const important=["shadowOrderPlaced","shadowOrderExpired","shadowOpened","shadowClosed","shadowRecovered","recoveryError","recoveryDuplicateOpen","researchRanking","performanceError","openInterestError","tickError"];
     if (important.includes(event?.event)) {
