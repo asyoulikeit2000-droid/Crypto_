@@ -210,6 +210,14 @@ export function createBinanceUsdmFeed({
   function processPublic(raw) {
     const d=parseMessage(raw);
     if (!d) return;
+    if (d.e === "aggTrade") {
+      const row=normalizeAggTrade(d);
+      if (row) {
+        updateStatus(row.symbol,"lastTradeAt",row.t);
+        onTrade(row);
+      }
+      return;
+    }
     if (d.e === "depthUpdate" || (Array.isArray(d.b) && Array.isArray(d.a) && d.s)) {
       const row=normalizeDepth(d);
       if (row) {
