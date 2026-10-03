@@ -8,6 +8,7 @@ import { evaluateSignalReadiness, evaluateProductionRobustness } from "./signal-
 import { createPreRallyScanner } from "./scanner/service.mjs";
 import { createTursoCompat, tursoConfigured } from "./storage/turso-store.mjs";
 import { startRetentionLoop } from "./storage/retention.mjs";
+import { evaluateDerivativeContext, derivePositionContext } from "./swing-context.mjs";
 
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -22,9 +23,9 @@ if (!(await primaryStore.healthcheck())) throw new Error("Turso healthcheck fail
 await primaryStore.markHealth("runtime", "BOOTING", { paperOnly: true, executionEnabled: false });
 const FEATURE_VERSION = "v2.1";
 const MODEL_ID = "rules_v3_selective";
-const H4_MODEL_ID = "rules_h4_swing_selective_v2";
+const H4_MODEL_ID = "rules_h4_swing_context_v3";
 const D1_MODEL_ID = "rules_d1_position_shadow_v1";
-const MTF_MODEL_ID = "rules_mtf_swing_position_shadow_v1";
+const MTF_MODEL_ID = "rules_mtf_swing_context_v2";
 const H4_HORIZON_SECONDS = 4 * 60 * 60;
 const D1_HORIZON_SECONDS = 24 * 60 * 60;
 const TRAIN_INTERVAL_MS = 2 * 60 * 1000;
@@ -65,6 +66,7 @@ const state = {
   errors: [],
   counts: { trades: 0, books: 0, derivatives: 0, ticks: 0, features: 0, signals: 0, paperTrades: 0 },
   market: new Map(),
+  derivativeHistory: new Map(),
   intelligence: createIntelligenceEngine(),
   batchCursor: 0,
   marketPollInFlight: false,
@@ -106,6 +108,38 @@ function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
 function finite(x, fallback = 0) {
   const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function rememberDerivative(assetId, patch) {
+  const now = Date.now();
+  const prior = state.derivativeHistory.get(assetId) || [];
+  const latest = prior.at(-1) || {};
+  const next = { ...latest, ...patch, t: now };
+  prior.push(next);
+  const cutoff = now - 4 * 60 * 60 * 1000;
+  while (prior.length && prior[0].t < cutoff) prior.shift();
+  state.derivativeHistory.set(assetId, prior);
+  return next;
+}
+
+function derivativeContext(assetId) {
+  const history = state.derivativeHistory.get(assetId) || [];
+  const latest = history.at(-1) || {};
+  const target = Date.now() - 30 * 60 * 1000;
+  let anchor = null;
+  for (let i=history.length-1;i>=0;i--) {
+    if (history[i].t <= target) { anchor = history[i]; break; }
+  }
+  const currentOi = Number(latest.openInterestUsd);
+  const priorOi = Number(anchor?.openInterestUsd);
+  const oiChange30m = Number.isFinite(currentOi) && currentOi > 0 && Number.isFinite(priorOi) && priorOi > 0
+    ? currentOi / priorOi - 1
+    : null;
+  return {
+    fundingRate: Number.isFinite(Number(latest.fundingRate)) ? Number(latest.fundingRate) : null,
+    openInterestUsd: Number.isFinite(currentOi) ? currentOi : null,
+    oiChange30m
+  };
 }
 function jsonReply(res, status, body) {
   const text = JSON.stringify(body);
@@ -824,9 +858,13 @@ function h4ShadowDecision(asset, bars) {
 
   const direction = r4h > 0 ? "LONG" : "SHORT";
   const sign = direction === "LONG" ? 1 : -1;
+  const derivatives = evaluateDerivativeContext({ direction, ...derivativeContext(asset.id) });
+  if (derivatives.critical.length) return { action: "NO TRADE", reason: "h4_derivative_crowding", derivatives };
+
   const riskPct = clamp(Math.max(0.005, avgRange * 2.5), 0.005, 0.03);
-  const rawP = clamp(0.52 + Math.min(0.14, Math.abs(r4h) * 5) + Math.min(0.05, Math.max(0, volumeRatio - 1) * 0.04) + efficiency * 0.08, 0.52, 0.82);
-  if (rawP < 0.70) return { action: "NO TRADE", reason: "h4_probability_gate" };
+  const baseP = 0.52 + Math.min(0.14, Math.abs(r4h) * 5) + Math.min(0.05, Math.max(0, volumeRatio - 1) * 0.04) + efficiency * 0.08;
+  const rawP = clamp(baseP + derivatives.adjustment, 0.48, 0.84);
+  if (rawP < 0.70) return { action: "NO TRADE", reason: "h4_probability_gate", derivatives };
 
   return {
     action: direction,
@@ -843,8 +881,8 @@ function h4ShadowDecision(asset, bars) {
     pT3: clamp(rawP * 0.56, 0.20, 0.62),
     expectedValue: rawP * riskPct - (1 - rawP) * riskPct,
     riskState: "SHADOW",
-    reasons: ["h4_price_alignment","h4_trend_efficiency","h4_liquidity_pass","shadow_validation_only"],
-    research: { r1h, r4h, volumeRatio, efficiency, avgRange, bars: bars.length }
+    reasons: ["h4_price_alignment","h4_trend_efficiency","h4_liquidity_pass",...derivatives.reasons,...derivatives.warnings,"shadow_validation_only"],
+    research: { r1h, r4h, volumeRatio, efficiency, avgRange, bars: bars.length, derivatives }
   };
 }
 
@@ -1087,14 +1125,22 @@ async function maybeWriteD1Shadow(asset, bars, d1Anchor) {
 
 function mtfShadowDecision(asset, bars, d1Anchor) {
   const h4 = h4ShadowDecision(asset, bars);
-  const d1 = d1ShadowDecision(asset, bars, d1Anchor);
   const h1 = state.intelligence.features(asset.id);
 
-  if (h4.action === "NO TRADE" || d1.action === "NO TRADE") {
-    return { action: "NO TRADE", reason: "mtf_parent_setup_missing" };
+  if (h4.action === "NO TRADE") {
+    return { action: "NO TRADE", reason: "mtf_h4_setup_missing" };
   }
-  if (h4.action !== d1.action) {
-    return { action: "NO TRADE", reason: "mtf_h4_d1_direction_conflict" };
+  const now = Date.now();
+  const b4h = barBefore(bars, now - 4 * 60 * 60 * 1000);
+  const price = finite(state.market.get(asset.id)?.price || bars.at(-1)?.close);
+  const positionContext = derivePositionContext({
+    price,
+    close4h: b4h?.close,
+    close24h: d1Anchor?.close,
+    direction: h4.action
+  });
+  if (!positionContext.ready) {
+    return { action: "NO TRADE", reason: positionContext.reason };
   }
   if (!h1?.data_fresh || !h1?.microstructure_quality) {
     return { action: "NO TRADE", reason: "mtf_h1_market_quality" };
@@ -1113,7 +1159,7 @@ function mtfShadowDecision(asset, bars, d1Anchor) {
 
   const direction = h4.action;
   const sign = direction === "LONG" ? 1 : -1;
-  const price = finite(h1.price || h4.entry);
+  const entryPrice = finite(h1.price || h4.entry);
   const riskPct = clamp(Math.max(
     0.006,
     finite(h4.research?.avgRange) * 3.0,
@@ -1121,8 +1167,8 @@ function mtfShadowDecision(asset, bars, d1Anchor) {
   ), 0.006, 0.025);
 
   const structuralStrength = clamp(
-    0.45 * finite(h4.pT1, 0.5) +
-    0.35 * finite(d1.pT1, 0.5) +
+    0.60 * finite(h4.pT1, 0.5) +
+    0.20 * clamp(0.5 + Math.min(0.25, Math.abs(positionContext.r24h) * 1.5), 0.5, 0.78) +
     0.20 * clamp(0.5 + expectedSign * alignment * 0.35, 0.5, 0.85),
     0.50, 0.82
   );
@@ -1133,25 +1179,25 @@ function mtfShadowDecision(asset, bars, d1Anchor) {
     horizon: "H4",
     modelId: MTF_MODEL_ID,
     maxHorizonSeconds: H4_HORIZON_SECONDS,
-    entry: price,
-    stopLoss: price * (1 - sign * riskPct),
-    target1: price * (1 + sign * riskPct),
-    target2: price * (1 + sign * riskPct * 2),
-    target3: price * (1 + sign * riskPct * 3),
+    entry: entryPrice,
+    stopLoss: entryPrice * (1 - sign * riskPct),
+    target1: entryPrice * (1 + sign * riskPct),
+    target2: entryPrice * (1 + sign * riskPct * 2),
+    target3: entryPrice * (1 + sign * riskPct * 3),
     pT1: structuralStrength,
     pT2: clamp(structuralStrength * 0.75, 0.30, 0.72),
     pT3: clamp(structuralStrength * 0.55, 0.20, 0.62),
     expectedValue: structuralStrength * riskPct - (1 - structuralStrength) * riskPct,
     riskState: "SHADOW",
     reasons: [
-      "mtf_d1_direction_confirmed",
-      "mtf_h4_setup_confirmed",
+      "mtf_position_context_confirmed",
+      "mtf_h4_context_setup_confirmed",
       "mtf_h1_entry_timing_confirmed",
       "mtf_microstructure_quality_pass",
       "shadow_validation_only"
     ],
     research: {
-      d1: d1.research,
+      position: positionContext,
       h4: h4.research,
       h1: {
         alignment,
@@ -2022,6 +2068,7 @@ async function pollMarketData() {
           state.counts.derivatives++;
           state.lastDeriv = row.observed_at;
           state.lastDerivReceivedAt = iso();
+          rememberDerivative(asset.id, { fundingRate: row.funding_rate });
         } catch (e) {
           recordError(e, "funding");
         }
@@ -2039,6 +2086,7 @@ async function pollMarketData() {
         };
         try {
           await insertRows("open_interest", [row], "asset_id,exchange,observed_at", "ignore");
+          rememberDerivative(asset.id, { openInterestUsd: row.open_interest_usd });
         } catch (e) {
           recordError(e, "open_interest");
         }
