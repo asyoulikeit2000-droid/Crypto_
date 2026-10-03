@@ -82,7 +82,7 @@ test("kill switch, stale data and weak expectancy independently block trading", 
 test("risk engine blocks excessive stop loss, leverage, daily loss and drawdown", () => {
   const config = goodConfig("paper");
   const intent = { ...goodIntent(), effectiveLeverage: 5, maxLossAtStopUsd: 500 };
-  const account = { ...goodAccount(), equityUsd: 47_000, peakEquityUsd: 5_000, dailyPnlUsd: -1000 };
+  const account = { ...goodAccount(), equityUsd: 47_000, peakEquityUsd: 50_000, dailyPnlUsd: -1000 };
   const result = evaluateTradeIntent(intent, account, goodMarket(), config);
   assert.ok(result.failed.includes("leverageLimit"));
   assert.ok(result.failed.includes("singleTradeRiskLimit"));
