@@ -27,12 +27,12 @@ function parseMessage(raw) {
 
 export function publicStreams(symbols = []) {
   return [...new Set(symbols.map(lowerSymbol).filter(Boolean))]
-    .flatMap(s => [`${s}@depth20@100ms`, `${s}@bookTicker`, `${s}@aggTrade`]);
+    .flatMap(s => [`${s}@depth20@100ms`, `${s}@bookTicker`]);
 }
 
 export function marketStreams(symbols = []) {
   return [...new Set(symbols.map(lowerSymbol).filter(Boolean))]
-    .map(s => `${s}@markPrice@1s`);
+    .flatMap(s => [`${s}@aggTrade`, `${s}@markPrice@1s`]);
 }
 
 export function combinedUrl(base, streams) {
