@@ -35,7 +35,8 @@ if (enabled(process.env.SHADOW_DYNAMIC_UNIVERSE_ENABLED)) {
       maxAssets:Number(process.env.SHADOW_UNIVERSE_MAX_ASSETS || 10),
       pinned:String(process.env.SHADOW_UNIVERSE_PINNED || "BTCUSDT").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean),
       minQuoteVolumeUsd:Number(process.env.SHADOW_UNIVERSE_MIN_QUOTE_VOLUME_USD || 25000000),
-      maxSpreadBps:Number(process.env.SHADOW_UNIVERSE_MAX_SPREAD_BPS || 8)
+      maxSpreadBps:Number(process.env.SHADOW_UNIVERSE_MAX_SPREAD_BPS || 8),
+      minOnboardAgeDays:Number(process.env.SHADOW_UNIVERSE_MIN_ONBOARD_AGE_DAYS || 30)
     });
     if (ranked.length >= 4) {
       runtimeEnv.SHADOW_SYMBOLS=ranked.map(x=>x.symbol).join(",");

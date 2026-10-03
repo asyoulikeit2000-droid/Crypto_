@@ -34,7 +34,9 @@ export function rankBinanceResearchUniverse({
   maxAssets=10,
   pinned=["BTCUSDT"],
   minQuoteVolumeUsd=25_000_000,
-  maxSpreadBps=8
+  maxSpreadBps=8,
+  minOnboardAgeDays=30,
+  nowMs=Date.now()
 } = {}) {
   const instruments=new Map(
     (exchangeInfo||[]).filter(isEligibleBinancePerpetual).map(x=>[upper(x.symbol),x])
@@ -46,6 +48,10 @@ export function rankBinanceResearchUniverse({
     const symbol=upper(t.symbol);
     const ins=instruments.get(symbol);
     if(!ins) continue;
+
+    const onboardDate=finite(ins.onboardDate,null);
+    const ageDays=onboardDate!=null ? Math.max(0,(finite(nowMs,Date.now())-onboardDate)/86_400_000) : null;
+    if(ageDays!=null && ageDays<Math.max(0,finite(minOnboardAgeDays,30))) continue;
 
     const quoteVolume=finite(t.quoteVolume);
     const trades=Math.max(0,finite(t.count));
@@ -71,6 +77,8 @@ export function rankBinanceResearchUniverse({
       tradeCount:trades,
       lastPrice,
       spreadBps,
+      onboardDate,
+      ageDays,
       score:Number(score.toFixed(4))
     });
   }
@@ -107,7 +115,8 @@ export async function resolveBinanceResearchUniverse({
   maxAssets=10,
   pinned=["BTCUSDT"],
   minQuoteVolumeUsd=25_000_000,
-  maxSpreadBps=8
+  maxSpreadBps=8,
+  minOnboardAgeDays=30
 } = {}) {
   if(typeof fetchImpl!=="function") throw new Error("fetch unavailable");
   const [info,tickers,books]=await Promise.all([
@@ -119,6 +128,6 @@ export async function resolveBinanceResearchUniverse({
     exchangeInfo:info?.symbols||[],
     tickers:Array.isArray(tickers)?tickers:[],
     books:Array.isArray(books)?books:[],
-    maxAssets,pinned,minQuoteVolumeUsd,maxSpreadBps
+    maxAssets,pinned,minQuoteVolumeUsd,maxSpreadBps,minOnboardAgeDays
   });
 }
