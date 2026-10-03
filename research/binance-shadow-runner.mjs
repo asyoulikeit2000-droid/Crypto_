@@ -57,6 +57,7 @@ export function createBinanceShadowRunner({
   const open=new Map();
   const lastClosedAt=new Map();
   const performance={};
+  let performanceProfile={};
   let timer=null;
   let performanceTimer=null;
   let equityUsd=finite(initialEquityUsd,5000);
@@ -66,12 +67,19 @@ export function createBinanceShadowRunner({
   function key(family,symbol){ return family+":"+symbol; }
 
   async function refreshPerformance() {
-    for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
-      try {
-        performance[family]=await lab.performance({family,recentCount:100,foldCount:5});
-      } catch (error) {
-        onStatus({event:"performanceError",family,error:String(error?.message||error),at:Date.now()});
+    try {
+      if (typeof lab.performanceProfile === "function") {
+        performanceProfile=await lab.performanceProfile({recentCount:100,foldCount:5});
+        for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
+          performance[family]=performanceProfile?.families?.[family] || {};
+        }
+      } else {
+        for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
+          performance[family]=await lab.performance({family,recentCount:100,foldCount:5});
+        }
       }
+    } catch (error) {
+      onStatus({event:"performanceError",error:String(error?.message||error),at:Date.now()});
     }
     return performance;
   }
@@ -128,6 +136,7 @@ export function createBinanceShadowRunner({
         features,
         btcFeatures:symbol==="BTCUSDT" ? features : btcFeatures,
         performance,
+        performanceProfile,
         researchMode:true
       });
 
@@ -182,7 +191,13 @@ export function createBinanceShadowRunner({
               open_interest:features.open_interest,
               open_interest_change:features.open_interest_change,
               spread_bps:features.spread_bps,
-              feature_snapshot:features
+              feature_snapshot:features,
+              context_evidence:{
+                status:candidate.contextEvidence?.status,
+                reasons:candidate.contextEvidence?.reasons,
+                shrunk_net_bps:candidate.contextEvidence?.shrunkNetBps,
+                execution_eligible:candidate.contextEvidence?.executionEligible
+              }
             }
           });
           open.set(k,{trial,openedAtMs:now});
@@ -241,6 +256,7 @@ export function createBinanceShadowRunner({
       openTrials:[...open.values()].map(x=>x.trial),
       cooldowns:Object.fromEntries([...lastClosedAt.entries()]),
       performance:{...performance},
+      performanceProfile,
       equityUsd,
       peakEquityUsd:peakEquity
     })
