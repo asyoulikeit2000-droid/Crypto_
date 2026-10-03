@@ -99,11 +99,16 @@ export function buildTradeDecision({
 
   const riskPerStopUsd = sizing.riskUsd;
   const rewardRisk = finite(policy.rewardRisk, 1.5);
+  const configuredMaxLeverage = Math.max(1, finite(config?.maxLeverage, 1));
+  const preferredLeverage = Math.max(1, finite(policy.preferredLeverage, 2));
+  const executionLeverage = Math.min(configuredMaxLeverage, preferredLeverage);
+
   const intent = {
     symbol,
     side,
     requestedNotionalUsd:sizing.notionalUsd,
-    effectiveLeverage: sizing.notionalUsd / Math.max(1, finite(account?.equityUsd)),
+    effectiveLeverage: executionLeverage,
+    notionalToEquity: sizing.notionalUsd / Math.max(1, finite(account?.equityUsd)),
     expectedGrossUsd,
     expectedNetUsd,
     maxLossAtStopUsd:riskPerStopUsd,
