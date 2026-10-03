@@ -10,17 +10,28 @@ export function createBinanceFeatureBridge({ intelligence } = {}) {
   function id(symbol){ return "binance:"+String(symbol||"").toLowerCase().replace(/usdt$/,""); }
 
   function onTrade(row) {
-    intelligence.onTrade(id(row.symbol),{
+    const key=id(row.symbol);
+    intelligence.onTrade(key,{
       t:finite(row.t,Date.now()),
       price:finite(row.price),
       qty:finite(row.qty),
       side:row.side
     });
+    const prev=metadata.get(key)||{};
+    const t=finite(row.t,Date.now());
+    const recent=[...(prev.recentTrades||[]),{
+      t,
+      price:finite(row.price),
+      qty:finite(row.qty),
+      side:String(row.side||"").toUpperCase()
+    }].filter(x=>t-finite(x.t)<=120_000).slice(-5000);
+    metadata.set(key,{...prev,lastTrade:row,recentTrades:recent});
   }
 
   function onBook(row) {
     if (row.type !== "depth") return;
-    intelligence.onBook(id(row.symbol),{
+    const key=id(row.symbol);
+    intelligence.onBook(key,{
       updatedAt:finite(row.t,Date.now()),
       imbalance:finite(row.imbalance),
       spreadBps:finite(row.spreadBps),
@@ -28,6 +39,8 @@ export function createBinanceFeatureBridge({ intelligence } = {}) {
       bidDepthUsd:finite(row.bidDepthUsd),
       askDepthUsd:finite(row.askDepthUsd)
     });
+    const prev=metadata.get(key)||{};
+    metadata.set(key,{...prev,book:row});
   }
 
   function onMark(row) {
@@ -61,9 +74,22 @@ export function createBinanceFeatureBridge({ intelligence } = {}) {
       mark_price:finite(meta.mark?.markPrice,null),
       open_interest:oiNow || null,
       open_interest_change:oiChange,
-      open_interest_updated_at:finite(oi?.t,null)
+      open_interest_updated_at:finite(oi?.t,null),
+      best_bid:finite(meta.book?.bestBid,null),
+      best_ask:finite(meta.book?.bestAsk,null),
+      best_bid_qty:finite(meta.book?.bids?.[0]?.[1],0),
+      best_ask_qty:finite(meta.book?.asks?.[0]?.[1],0),
+      book_updated_at:finite(meta.book?.t,null),
+      last_trade_price:finite(meta.lastTrade?.price,null),
+      last_trade_side:String(meta.lastTrade?.side||"").toUpperCase()||null,
+      last_trade_at:finite(meta.lastTrade?.t,null)
     };
   }
 
-  return { id,onTrade,onBook,onMark,onOpenInterest,features };
+  function tradesSince(symbol,sinceMs=0) {
+    const rows=metadata.get(id(symbol))?.recentTrades || [];
+    return rows.filter(x=>finite(x.t)>=finite(sinceMs));
+  }
+
+  return { id,onTrade,onBook,onMark,onOpenInterest,features,tradesSince };
 }

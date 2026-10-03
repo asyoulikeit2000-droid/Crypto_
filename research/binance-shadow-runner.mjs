@@ -1,6 +1,7 @@
 import { routeStrategy } from "../strategy/router.mjs";
 import { sizePosition } from "../strategy/equity-risk.mjs";
 import { rankStrategyContexts } from "./context-ranking.mjs";
+import { buildMakerOrder, evaluateMakerFill } from "./maker-fill-model.mjs";
 
 function finite(v, fallback = 0) {
   const n=Number(v);
@@ -47,16 +48,23 @@ export function createBinanceShadowRunner({
   maxHoldMs=90*60*1000,
   performanceRefreshMs=5*60*1000,
   reentryCooldownMs=5*60*1000,
+  makerOrderTtlMs=30_000,
+  attemptCooldownMs=60_000,
+  queueAheadFraction=0.5,
   onStatus=()=>{},
   setRepeater=setInterval,
   clearRepeater=clearInterval
 } = {}) {
-  if (!bridge?.features) throw new Error("Binance feature bridge required");
-  if (!lab?.openTrial || !lab?.closeTrial || !lab?.performance) throw new Error("strategy lab required");
+  if (!bridge?.features || typeof bridge.tradesSince !== "function") throw new Error("Binance feature bridge with trade history required");
+  if (!lab?.openTrial || !lab?.closeTrial || !lab?.performance || !lab?.recordAttempt || !lab?.completeAttempt) {
+    throw new Error("strategy lab with attempt persistence required");
+  }
 
   const wanted=[...new Set(symbols.map(x=>String(x).toUpperCase()))];
   const open=new Map();
+  const pending=new Map();
   const lastClosedAt=new Map();
+  const lastAttemptAt=new Map();
   const performance={};
   let performanceProfile={};
   let rankings=[];
@@ -65,6 +73,7 @@ export function createBinanceShadowRunner({
   let equityUsd=finite(initialEquityUsd,5000);
   let peakEquity=finite(peakEquityUsd,equityUsd);
   let started=false;
+  const fillStats={placed:0,filled:0,expired:0};
 
   function key(family,symbol){ return family+":"+symbol; }
 
@@ -75,6 +84,7 @@ export function createBinanceShadowRunner({
         equityUsd=finite(accounting?.equityUsd,initialEquityUsd);
         peakEquity=Math.max(equityUsd,finite(accounting?.peakEquityUsd,equityUsd));
       }
+
       if (typeof lab.loadOpen === "function") {
         const rows=await lab.loadOpen({});
         for (const trial of rows || []) {
@@ -91,9 +101,45 @@ export function createBinanceShadowRunner({
           });
         }
       }
+
+      if (typeof lab.loadPendingAttempts === "function") {
+        const attempts=await lab.loadPendingAttempts({});
+        for (const attempt of attempts || []) {
+          const order=attempt?.metadata?.maker_order;
+          if (!order?.valid || !attempt?.family || !attempt?.symbol) {
+            await lab.completeAttempt(attempt,{
+              status:"EXPIRED",
+              details:{completion_reason:"invalidRecoveredAttempt"}
+            });
+            continue;
+          }
+          const k=key(attempt.family,attempt.symbol);
+          if (open.has(k) || pending.has(k)) {
+            await lab.completeAttempt(attempt,{
+              status:"EXPIRED",
+              details:{completion_reason:"duplicateRecoveredAttempt"}
+            });
+            continue;
+          }
+          if (Date.now() >= finite(order.expiresAt)) {
+            await lab.completeAttempt(attempt,{
+              status:"EXPIRED",
+              details:{completion_reason:"expiredDuringRestart"}
+            });
+            fillStats.expired++;
+            lastAttemptAt.set(k,finite(order.submittedAt,Date.now()));
+            continue;
+          }
+          pending.set(k,{attempt,order});
+          fillStats.placed++;
+          lastAttemptAt.set(k,finite(order.submittedAt,Date.now()));
+        }
+      }
+
       onStatus({
         event:"shadowRecovered",
         openTrials:open.size,
+        pendingOrders:pending.size,
         equityUsd,
         peakEquityUsd:peakEquity,
         at:Date.now()
@@ -135,6 +181,7 @@ export function createBinanceShadowRunner({
 
   async function closeEligible() {
     const now=Date.now();
+    let closedAny=false;
     for (const [k,state] of [...open.entries()]) {
       const price=currentPrice(state.trial.symbol);
       if (!(price>0)) continue;
@@ -155,6 +202,7 @@ export function createBinanceShadowRunner({
         lastClosedAt.set(k,now);
         equityUsd += finite(closed?.outcome?.netUsd);
         peakEquity=Math.max(peakEquity,equityUsd);
+        closedAny=true;
         onStatus({
           event:"shadowClosed",
           family:closed.family,
@@ -167,6 +215,106 @@ export function createBinanceShadowRunner({
         });
       } catch (error) {
         onStatus({event:"closeError",key:k,error:String(error?.message||error),at:now});
+      }
+    }
+    return closedAny;
+  }
+
+  async function evaluatePending() {
+    const now=Date.now();
+    for (const [k,state] of [...pending.entries()]) {
+      const trades=bridge.tradesSince(state.order.symbol,state.order.submittedAt);
+      const result=evaluateMakerFill(state.order,trades,now);
+      if (result.status==="PENDING") continue;
+
+      if (result.status==="EXPIRED") {
+        await lab.completeAttempt(state.attempt,{
+          status:"EXPIRED",
+          completedAt:new Date(now).toISOString(),
+          details:{
+            completion_reason:result.reason,
+            observed_opposing_qty:result.observedOpposingQty,
+            required_fill_qty:result.thresholdQty
+          }
+        });
+        pending.delete(k);
+        lastAttemptAt.set(k,now);
+        fillStats.expired++;
+        onStatus({
+          event:"shadowOrderExpired",
+          family:state.order.family,
+          symbol:state.order.symbol,
+          side:state.order.side,
+          limitPrice:state.order.limitPrice,
+          at:now
+        });
+        continue;
+      }
+
+      if (result.status==="FILLED") {
+        const targets=priceTargets({
+          side:state.order.side,
+          entryPrice:result.fillPrice,
+          stopDistancePct:state.order.stopDistancePct,
+          rewardRisk:state.order.rewardRisk
+        });
+
+        await lab.completeAttempt(state.attempt,{
+          status:"FILLED",
+          completedAt:new Date(result.fillAt||now).toISOString(),
+          details:{
+            completion_reason:result.reason,
+            fill_price:result.fillPrice,
+            fill_at:result.fillAt,
+            fill_latency_ms:result.latencyMs,
+            observed_opposing_qty:result.observedOpposingQty,
+            required_fill_qty:result.thresholdQty
+          }
+        });
+
+        const trial=await lab.openTrial({
+          trialId:`TRADE:${state.order.family}:${state.order.symbol}:${state.order.submittedAt}`,
+          family:state.order.family,
+          symbol:state.order.symbol,
+          side:state.order.side,
+          regime:state.order.regime,
+          score:state.order.score,
+          entryPrice:result.fillPrice,
+          notionalUsd:state.order.notionalUsd,
+          stopPrice:targets.stopPrice,
+          targetPrice:targets.targetPrice,
+          metadata:{
+            ...(state.attempt.metadata||{}),
+            attempt_id:state.attempt.trial_id,
+            entry_fill_type:"MAKER_SIMULATED",
+            signal_price:state.order.signalPrice,
+            maker_limit_price:state.order.limitPrice,
+            fill_reason:result.reason,
+            fill_latency_ms:result.latencyMs,
+            observed_opposing_qty:result.observedOpposingQty,
+            required_fill_qty:result.thresholdQty
+          }
+        });
+
+        pending.delete(k);
+        open.set(k,{trial,openedAtMs:finite(result.fillAt,now)});
+        lastAttemptAt.set(k,now);
+        fillStats.filled++;
+
+        onStatus({
+          event:"shadowOpened",
+          family:trial.family,
+          symbol:trial.symbol,
+          side:trial.side,
+          score:trial.score,
+          regime:trial.regime,
+          notionalUsd:trial.notional_usd,
+          entryPrice:trial.entry_price,
+          stopPrice:trial.stop_price,
+          targetPrice:trial.target_price,
+          fillLatencyMs:result.latencyMs,
+          at:now
+        });
       }
     }
   }
@@ -188,8 +336,10 @@ export function createBinanceShadowRunner({
       for (const candidate of routed.candidates || []) {
         const k=key(candidate.family,symbol);
         const lastExit=finite(lastClosedAt.get(k),0);
-        if (open.has(k) || candidate.action==="NO_TRADE") continue;
+        const lastAttempt=finite(lastAttemptAt.get(k),0);
+        if (open.has(k) || pending.has(k) || candidate.action==="NO_TRADE") continue;
         if (lastExit && Date.now()-lastExit < reentryCooldownMs) continue;
+        if (lastAttempt && Date.now()-lastAttempt < attemptCooldownMs) continue;
 
         const plan=stopPlan(features,candidate.family);
         const sizing=sizePosition({
@@ -204,34 +354,47 @@ export function createBinanceShadowRunner({
         if (!sizing.allowed) continue;
 
         const side=candidate.action==="BUY" ? "BUY" : "SELL";
-        const targets=priceTargets({
-          side,
-          entryPrice:features.price,
-          stopDistancePct:plan.stopDistancePct,
-          rewardRisk:plan.rewardRisk
-        });
         const now=Date.now();
+        const order=buildMakerOrder({
+          family:candidate.family,
+          symbol,
+          side,
+          regime:routed.regime?.regime,
+          score:candidate.score,
+          features,
+          notionalUsd:sizing.notionalUsd,
+          stopDistancePct:plan.stopDistancePct,
+          rewardRisk:plan.rewardRisk,
+          submittedAt:now,
+          ttlMs:makerOrderTtlMs,
+          queueAheadFraction
+        });
+        if (!order.valid) {
+          onStatus({event:"makerOrderRejected",family:candidate.family,symbol,reason:order.reason,at:now});
+          continue;
+        }
 
         try {
-          const trial=await lab.openTrial({
-            trialId:`${candidate.family}:${symbol}:${now}`,
+          const attempt=await lab.recordAttempt({
+            attemptId:`ATTEMPT:${candidate.family}:${symbol}:${now}`,
             family:candidate.family,
             symbol,
             side,
             regime:routed.regime?.regime,
             score:candidate.score,
-            entryPrice:features.price,
+            signalPrice:features.price,
+            limitPrice:order.limitPrice,
             notionalUsd:sizing.notionalUsd,
-            stopPrice:targets.stopPrice,
-            targetPrice:targets.targetPrice,
+            expiresAt:order.expiresAt,
             metadata:{
               source:"BINANCE_PUBLIC_SHADOW",
               exchange:"BINANCE",
               research_only:true,
+              maker_order:order,
               stop_distance_pct:plan.stopDistancePct,
               reward_risk:plan.rewardRisk,
               risk_usd:sizing.riskUsd,
-              equity_at_entry_usd:equityUsd,
+              equity_at_signal_usd:equityUsd,
               funding_rate:features.funding_rate,
               open_interest:features.open_interest,
               open_interest_change:features.open_interest_change,
@@ -245,17 +408,23 @@ export function createBinanceShadowRunner({
               }
             }
           });
-          open.set(k,{trial,openedAtMs:now});
+
+          pending.set(k,{attempt,order});
+          lastAttemptAt.set(k,now);
+          fillStats.placed++;
           onStatus({
-            event:"shadowOpened",
+            event:"shadowOrderPlaced",
             family:candidate.family,
             symbol,
             side,
             score:candidate.score,
             regime:routed.regime?.regime,
             notionalUsd:sizing.notionalUsd,
-            stopPrice:targets.stopPrice,
-            targetPrice:targets.targetPrice,
+            signalPrice:features.price,
+            limitPrice:order.limitPrice,
+            expiresAt:order.expiresAt,
+            queueAheadQty:order.queueAheadQty,
+            orderQty:order.orderQty,
             at:now
           });
         } catch (error) {
@@ -266,11 +435,15 @@ export function createBinanceShadowRunner({
   }
 
   async function tick() {
-    await closeEligible();
+    const closedAny=await closeEligible();
+    if (closedAny) await refreshPerformance();
+    await evaluatePending();
     await openCandidates();
     onStatus({
       event:"shadowHeartbeat",
       openTrials:open.size,
+      pendingOrders:pending.size,
+      fillStats:{...fillStats},
       equityUsd,
       peakEquityUsd:peakEquity,
       at:Date.now()
@@ -300,10 +473,12 @@ export function createBinanceShadowRunner({
       started,
       symbols:wanted,
       openTrials:[...open.values()].map(x=>x.trial),
+      pendingOrders:[...pending.values()].map(x=>x.order),
       cooldowns:Object.fromEntries([...lastClosedAt.entries()]),
       performance:{...performance},
       performanceProfile,
       rankings:[...rankings],
+      fillStats:{...fillStats},
       equityUsd,
       peakEquityUsd:peakEquity
     })
