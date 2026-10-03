@@ -44,7 +44,6 @@ export function createBinanceShadowRunner({
   maxNotionalEquityMultiple=1,
   evaluationMs=15_000,
   maxHoldMs=90*60*1000,
-  reentryCooldownMs=5*60*1000,
   performanceRefreshMs=5*60*1000,
   reentryCooldownMs=5*60*1000,
   onStatus=()=>{},
