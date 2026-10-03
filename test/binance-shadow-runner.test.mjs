@@ -102,3 +102,49 @@ test("shadow runner does not open when market quality is stale",async()=>{
   await runner.tick();
   assert.equal(opens,0);
 });
+
+
+test("shadow runner restores open trials and realized equity after restart",async()=>{
+  const bridge={features(symbol){
+    return {
+      symbol,price:100,data_fresh:false,microstructure_quality:false,spread_bps:1,
+      return_1m:0,return_5m:0,return_15m:0,realized_vol:0,
+      cvd_2m:0,cvd_10m:0,orderbook_imbalance:0
+    };
+  }};
+  const trial={
+    trial_id:"TREND_CONTINUATION_V1:XRPUSDT:1",
+    family:"TREND_CONTINUATION_V1",
+    symbol:"XRPUSDT",
+    side:"BUY",
+    opened_at:new Date(Date.now()-60_000).toISOString(),
+    entry_price:100,
+    stop_price:99,
+    target_price:102,
+    notional_usd:1000,
+    status:"OPEN"
+  };
+  const lab={
+    async loadOpen(){return [trial];},
+    async accountingState(){return {equityUsd:5025,peakEquityUsd:5040,realizedNetUsd:25,closedCount:3};},
+    async performanceProfile(){return {sampleCount:3,families:{},symbols:{},regimes:{},contexts:{}};},
+    async performance(){return {};},
+    async openTrial(){throw new Error("should not open");},
+    async closeTrial(){throw new Error("should not close");}
+  };
+  const events=[];
+  const runner=createBinanceShadowRunner({
+    symbols:["XRPUSDT"],bridge,lab,
+    initialEquityUsd:5000,
+    setRepeater:()=>1,clearRepeater:()=>{},
+    onStatus:e=>events.push(e)
+  });
+  await runner.start();
+  const state=runner.state();
+  assert.equal(state.openTrials.length,1);
+  assert.equal(state.openTrials[0].trial_id,trial.trial_id);
+  assert.equal(state.equityUsd,5025);
+  assert.equal(state.peakEquityUsd,5040);
+  assert.ok(events.some(e=>e.event==="shadowRecovered" && e.openTrials===1));
+  runner.stop();
+});
