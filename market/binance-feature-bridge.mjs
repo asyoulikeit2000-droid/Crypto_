@@ -46,7 +46,27 @@ export function createBinanceFeatureBridge({ intelligence } = {}) {
   function onMark(row) {
     const key=id(row.symbol);
     const prev=metadata.get(key)||{};
-    metadata.set(key,{...prev,mark:row});
+    const prior=prev.mark;
+    let fundingEvents=[...(prev.fundingEvents||[])];
+    const priorFundingTime=finite(prior?.nextFundingTime,null);
+    const currentTime=finite(row?.t,Date.now());
+    const nextFundingTime=finite(row?.nextFundingTime,null);
+    if(
+      priorFundingTime!=null &&
+      currentTime>=priorFundingTime &&
+      nextFundingTime!=null &&
+      nextFundingTime!==priorFundingTime
+    ){
+      fundingEvents.push({
+        t:priorFundingTime,
+        rate:finite(prior?.fundingRate,0),
+        markPrice:finite(prior?.markPrice,null)
+      });
+    }
+    fundingEvents=fundingEvents
+      .filter(x=>currentTime-finite(x?.t,currentTime)<=24*60*60*1000)
+      .slice(-20);
+    metadata.set(key,{...prev,mark:row,fundingEvents});
   }
 
   function onOpenInterest(row) {
@@ -91,5 +111,12 @@ export function createBinanceFeatureBridge({ intelligence } = {}) {
     return rows.filter(x=>finite(x.t)>=finite(sinceMs));
   }
 
-  return { id,onTrade,onBook,onMark,onOpenInterest,features,tradesSince };
+  function fundingEventsSince(symbol,sinceMs=0,untilMs=Infinity) {
+    const rows=metadata.get(id(symbol))?.fundingEvents || [];
+    const from=finite(sinceMs,0);
+    const to=finite(untilMs,Infinity);
+    return rows.filter(x=>finite(x.t)>=from && finite(x.t)<=to);
+  }
+
+  return { id,onTrade,onBook,onMark,onOpenInterest,features,tradesSince,fundingEventsSince };
 }
