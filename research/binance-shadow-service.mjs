@@ -44,8 +44,14 @@ export function createBinanceShadowService({
 
   async function emitStatus(source,status) {
     const row={source,...status};
-    if (source==="feed") lastFeedStatus=row;
-    if (source==="runner") lastRunnerStatus=row;
+    if (source==="feed") {
+      lastFeedStatus={
+        ...(lastFeedStatus||{}),
+        ...row,
+        symbols:row.symbols || lastFeedStatus?.symbols || {}
+      };
+    }
+    if (source==="runner") lastRunnerStatus={...(lastRunnerStatus||{}),...row};
     try {
       await markHealth("binance-shadow-research",
         status?.healthy===false ? "DEGRADED" : "OK",
