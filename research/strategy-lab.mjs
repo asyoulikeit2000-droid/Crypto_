@@ -1,5 +1,6 @@
 import { summarizeStrategyTrades } from "../strategy/performance-metrics.mjs";
 import { buildPerformanceProfile } from "./performance-profile.mjs";
+import { buildExecutionQualityProfile } from "./execution-quality.mjs";
 import { evaluateTradeOutcome } from "./outcome-accounting.mjs";
 
 function iso(ms=Date.now()){ return new Date(ms).toISOString(); }
@@ -156,6 +157,18 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
     return db("strategy_trials","GET",params);
   }
 
+  async function loadAttempts({ family, limit=10000 } = {}) {
+    const perStatus=Math.max(1,Math.floor(Number(limit||10000)/3));
+    const rows=(await Promise.all(["PENDING","FILLED","EXPIRED"].map(status=>{
+      const params={status:"eq."+status,order:"opened_at.asc",limit:String(perStatus)};
+      if(family) params.family="eq."+family;
+      return db("strategy_trials","GET",params);
+    }))).flat();
+    return rows
+      .filter(x=>x?.metadata?.attempt_only===true || String(x?.trial_id||"").startsWith("ATTEMPT:"))
+      .sort((a,b)=>String(a.opened_at||"").localeCompare(String(b.opened_at||"")));
+  }
+
   async function loadClosed({ family, limit=10000 } = {}) {
     const params={status:"eq.CLOSED",order:"closed_at.asc",limit:String(limit)};
     if (family) params.family="eq."+family;
@@ -211,5 +224,14 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
     return buildPerformanceProfile(trades,{recentCount,foldCount});
   }
 
-  return { openTrial, closeTrial, recordAttempt, completeAttempt, loadPendingAttempts, loadClosed, loadOpen, accountingState, performance, performanceProfile };
+  async function executionQualityProfile(options = {}) {
+    const rows=await loadAttempts({});
+    return buildExecutionQualityProfile(rows,options);
+  }
+
+  return {
+    openTrial,closeTrial,recordAttempt,completeAttempt,
+    loadPendingAttempts,loadAttempts,loadClosed,loadOpen,
+    accountingState,performance,performanceProfile,executionQualityProfile
+  };
 }
