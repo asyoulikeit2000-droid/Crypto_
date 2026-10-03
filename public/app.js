@@ -58,6 +58,8 @@ function render(){
   const mtft=mtf.validation?.test||{}; $("#mtfCopy").textContent=`${A(mtf.readyAssets)} assets ready · ${A(mtf.candidates)} candidates · ${A(mtf.outcomes)} outcomes · OOS n=${A(mtft.n)} · avg ${num(mtft.avgPnl,4)}`;
 
   const checks=[
+    [val.split?.method==="purged_expanding_window"&&val.folds?.length>=5,"Independent windows","5 purged forward windows required"],
+    [val.costCoverageComplete===true,"Cost coverage","Verified funding coverage required"],
     [cal.status==="ACTIVE","Calibration","ACTIVE required"],
     [val.status==="COMPLETE","Walk-forward","COMPLETE required"],
     [Number(test.n||0)>=20,"Test sample",`${Number(test.n||0)} / 20 minimum`],

@@ -1,4 +1,6 @@
 import http from "node:http";
+import { validateRecordedEvidence } from "./evidence-validation.mjs";
+import { PAPER_EVALUATION_VERSION, MAX_PATH_GAP_MS, evaluatePaperPath, readPaperPath, verifiedPaperOutcome } from "./paper-evaluation.mjs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,7 +252,7 @@ async function writeProviderStatus(status, message = null, dataset = "engine", l
     latency_ms: latencyMs,
     last_event_at: iso(),
     error_message: message,
-    metadata: { runtime_revision: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown" }
+    metadata: { runtime_revision: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown" }
   };
   try {
     await db("provider_status", "POST", { on_conflict: "provider,dataset" }, {
@@ -325,13 +327,11 @@ async function trainCalibration(force = false) {
   state.lastTrainingAt = now;
   try {
     const rows = await db("signal_outcomes", "GET", {
-      select: "signal_id,outcome,t1_hit,evaluation_version,holding_seconds",
+      select: "signal_id,outcome,t1_hit,evaluation_version,holding_seconds,exit_at,path_valid,pnl_after_cost",
+      evaluation_version: "eq." + PAPER_EVALUATION_VERSION,
       limit: "5000"
     });
-    const usable = rows.filter(x =>
-      x.evaluation_version === "paper_v2" ||
-      (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS)
-    );
+    const usable = rows.filter(x => verifiedPaperOutcome(x, MAX_HORIZON_SECONDS));
     const ids = usable.map(x => x.signal_id);
     if (!ids.length) {
       state.calibration = { ...state.calibration, trainedAt: iso(), sampleCount: 0, status: "WAITING_FOR_OUTCOMES" };
@@ -434,74 +434,28 @@ async function trainCalibration(force = false) {
 async function runWalkForwardValidation() {
   try {
     const modelSignals = await db("signals", "GET", {
-      select: "signal_id,created_at",
+      select: "signal_id,signal,created_at",
       model_id: "eq." + MODEL_ID,
       created_at: "gte." + VALIDATION_COHORT_START,
       limit: "5000"
     });
     const modelSignalIds = new Set(modelSignals.map(x => x.signal_id));
     const rows = await db("signal_outcomes", "GET", {
-      select: "signal_id,evaluated_at,outcome,pnl_after_cost,holding_seconds,evaluation_version",
+      select: "signal_id,evaluated_at,outcome,pnl_after_cost,holding_seconds,evaluation_version,exit_at,path_valid,t1_hit,funding_model",
+      evaluation_version: "eq." + PAPER_EVALUATION_VERSION,
       order: "evaluated_at.asc",
       limit: "5000"
     });
-    const usable = rows.filter(x => modelSignalIds.has(x.signal_id) &&
-      (x.evaluation_version === "paper_v2" || (x.evaluation_version === "paper_v1" && Number(x.holding_seconds || 0) <= MAX_HORIZON_SECONDS))
-    );
-    if (usable.length < 20) {
-      state.validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: usable.length, cohortStart: VALIDATION_COHORT_START };
-      return state.validation;
-    }
-    const split = Math.max(10, Math.floor(usable.length * 0.70));
-    const train = usable.slice(0, split);
-    const test = usable.slice(split);
-    const metrics = part => {
-      const wins = part.filter(x => ["TARGET_1","TARGET_2","TARGET_3"].includes(x.outcome)).length;
-      const pnls = part.map(x => finite(x.pnl_after_cost));
-      const avg = pnls.length ? pnls.reduce((a,b)=>a+b,0)/pnls.length : 0;
-      let equity = 0, peak = 0, maxDrawdown = 0;
-      for (const p of pnls) {
-        equity += p;
-        peak = Math.max(peak, equity);
-        maxDrawdown = Math.max(maxDrawdown, peak - equity);
-      }
-      return { n: part.length, wins, winRate: part.length ? wins/part.length : 0, avgPnl: avg, totalPnl: pnls.reduce((a,b)=>a+b,0), maxDrawdown };
-    };
-    const foldCount = 5;
-    const folds = [];
-    for (let i = 0; i < foldCount; i++) {
-      const from = Math.floor(i * usable.length / foldCount);
-      const to = Math.floor((i + 1) * usable.length / foldCount);
-      folds.push({ index: i + 1, ...metrics(usable.slice(from, to)) });
-    }
-    const foldAvgs = folds.map(x => x.avgPnl).sort((a,b)=>a-b);
-    const medianAvgPnl = foldAvgs[Math.floor(foldAvgs.length / 2)] || 0;
-    const recentFolds = folds.slice(-3);
-    const recentTotalPnl = recentFolds.reduce((sum,x)=>sum + x.totalPnl, 0);
-    const robustness = {
-      foldCount,
-      positiveFolds: folds.filter(x => x.avgPnl > 0 && x.totalPnl > 0).length,
-      medianAvgPnl,
-      recentTotalPnl,
-      folds
-    };
-    state.validation = {
-      status: "COMPLETE",
-      evaluatedAt: iso(),
-      sampleCount: usable.length,
-      split: { train: train.length, test: test.length, method: "chronological_70_30" },
-      train: metrics(train),
-      test: metrics(test),
-      robustness,
-      cohortStart: VALIDATION_COHORT_START
-    };
+    const usable = rows.filter(x => modelSignalIds.has(x.signal_id) && verifiedPaperOutcome(x, MAX_HORIZON_SECONDS));
+    state.validation = { ...validateRecordedEvidence(modelSignals, usable), cohortStart:VALIDATION_COHORT_START };
+    if (state.validation.status !== "COMPLETE") return state.validation;
     const run = await db("backtest_runs", "POST", {}, {
       started_at: iso(),
       finished_at: iso(),
       universe_methodology: "recorded_signal_set",
       target_definition: "H1 terminal outcome",
       model_id: MODEL_ID,
-      config: { type: "walk_forward_validation", train_fraction: 0.70, max_horizon_seconds: MAX_HORIZON_SECONDS },
+      config: { type: "purged_expanding_window", evaluation_version:PAPER_EVALUATION_VERSION, max_horizon_seconds: MAX_HORIZON_SECONDS },
       metrics: state.validation,
       status: "COMPLETE"
     }, { Prefer: "return=representation" });
@@ -735,11 +689,13 @@ async function evaluateHorizonModel(modelId) {
     }
 
     const outcomes = await db("signal_outcomes", "GET", {
-      select: "signal_id,evaluated_at,outcome,t1_hit,pnl_after_cost",
+      select: "signal_id,evaluated_at,outcome,t1_hit,pnl_after_cost,evaluation_version,holding_seconds,exit_at,path_valid,funding_model",
+      evaluation_version: "eq." + PAPER_EVALUATION_VERSION,
       order: "evaluated_at.asc",
       limit: "5000"
     });
-    const usable = outcomes.filter(x => signalById.has(x.signal_id));
+    const maxHorizon = modelId === D1_MODEL_ID ? D1_HORIZON_SECONDS : H4_HORIZON_SECONDS;
+    const usable = outcomes.filter(x => signalById.has(x.signal_id) && verifiedPaperOutcome(x, maxHorizon));
     let wins = 0, brier = 0;
     const dir = { LONG: { n: 0, w: 0 }, SHORT: { n: 0, w: 0 } };
     for (const o of usable) {
@@ -765,34 +721,7 @@ async function evaluateHorizonModel(modelId) {
       }
     };
 
-    const metrics = part => {
-      const pnls = part.map(x => finite(x.pnl_after_cost));
-      const partWins = part.filter(x => ["TARGET_1","TARGET_2","TARGET_3"].includes(String(x.outcome || ""))).length;
-      return {
-        n: part.length,
-        wins: partWins,
-        winRate: part.length ? partWins / part.length : 0,
-        avgPnl: pnls.length ? pnls.reduce((a,b)=>a+b,0) / pnls.length : 0,
-        totalPnl: pnls.reduce((a,b)=>a+b,0)
-      };
-    };
-
-    let validation;
-    if (usable.length < 20) {
-      validation = { status: "INSUFFICIENT_SAMPLE", sampleCount: usable.length, test: metrics([]) };
-    } else {
-      const split = Math.max(10, Math.floor(usable.length * 0.70));
-      const train = usable.slice(0, split);
-      const test = usable.slice(split);
-      validation = {
-        status: "COMPLETE",
-        evaluatedAt: iso(),
-        sampleCount: usable.length,
-        split: { train: train.length, test: test.length, method: "chronological_70_30" },
-        train: metrics(train),
-        test: metrics(test)
-      };
-    }
+    const validation = validateRecordedEvidence(signals, usable);
     const gate = evaluateSignalReadiness(calibration, validation);
 
     if (usable.length) {
@@ -1728,7 +1657,7 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
       status: "eq.OPEN",
       limit: "200"
     });
-    if (open.some(x => x.metadata?.asset_id === asset.id && (x.metadata?.horizon || "H1") === (decisionSnapshot.horizon || "H1"))) return;
+    if (open.some(x => x.metadata?.asset_id === asset.id && (x.metadata?.model_id || MODEL_ID) === (decisionSnapshot.modelId || MODEL_ID))) return;
 
     const notional = 100;
     const qty = notional / finite(decisionSnapshot.entry, 1);
@@ -1745,6 +1674,7 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
       status: "OPEN",
       metadata: {
         simulation: true,
+        evaluation_version: PAPER_EVALUATION_VERSION,
         asset_id: asset.id,
         symbol: asset.symbol,
         notional_usd: notional,
@@ -1766,111 +1696,49 @@ async function maybeOpenPaperTrade(signal, asset, decisionSnapshot) {
 async function managePaperTrades() {
   const open = await db("paper_trades", "GET", {
     select: "paper_trade_id,signal_id,side,entry_price,quantity,opened_at,fees,slippage,funding_cost,metadata",
-    status: "eq.OPEN",
-    limit: "200"
+    status: "eq.OPEN", limit: "200"
   });
   for (const trade of open) {
     try {
-      const assetId = trade.metadata?.asset_id;
-      const market = state.market.get(assetId);
-      const currentPrice = finite(market?.price);
-      if (!currentPrice) continue;
-
-      const meta = trade.metadata || {};
-      const openedAtMs = Date.parse(trade.opened_at);
-      const ageSeconds = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
-      const side = String(trade.side || "").toUpperCase();
-      const entry = finite(trade.entry_price);
-      const stop = finite(meta.stop_loss);
-      const t1 = finite(meta.target_1);
-      const t2 = finite(meta.target_2);
-      const t3 = finite(meta.target_3);
-
-      const ticks = await db("market_ticks", "GET", {
-        select: "observed_at,price",
-        asset_id: "eq." + assetId,
-        observed_at: "gte." + trade.opened_at,
-        order: "observed_at.asc",
-        limit: "5000"
-      });
-      const path = ticks.map(x => finite(x.price)).filter(x => x > 0);
-      if (!path.length) path.push(currentPrice);
-      const allPrices = [...path, currentPrice];
-
-      let mfe = 0;
-      let mae = 0;
-      let t1Hit = false, t2Hit = false, t3Hit = false, slHit = false;
-      for (const p of allPrices) {
-        const favorable = side === "LONG" ? (p - entry) / entry : (entry - p) / entry;
-        const adverse = side === "LONG" ? (entry - p) / entry : (p - entry) / entry;
-        mfe = Math.max(mfe, favorable);
-        mae = Math.max(mae, adverse);
-        if (side === "LONG") {
-          t1Hit ||= Boolean(t1 && p >= t1);
-          t2Hit ||= Boolean(t2 && p >= t2);
-          t3Hit ||= Boolean(t3 && p >= t3);
-          slHit ||= Boolean(stop && p <= stop);
-        } else if (side === "SHORT") {
-          t1Hit ||= Boolean(t1 && p <= t1);
-          t2Hit ||= Boolean(t2 && p <= t2);
-          t3Hit ||= Boolean(t3 && p <= t3);
-          slHit ||= Boolean(stop && p >= stop);
+      // If closing failed after the immutable outcome write, finish that close on retry.
+      const prior = await db("signal_outcomes", "GET", { signal_id: "eq." + trade.signal_id, limit: "1" });
+      let outcome = prior?.[0];
+      if (!outcome) {
+        const now = Date.now();
+        const ticks = await readPaperPath(db, trade, now);
+        const result = evaluatePaperPath(trade, ticks, now);
+        if (!result) {
+          const deadline = Date.parse(trade.opened_at)+Number(trade.metadata?.max_horizon_seconds)*1000;
+          if (Number.isFinite(deadline) && now >= deadline) {
+            await db("paper_trades", "PATCH", { paper_trade_id:"eq."+trade.paper_trade_id }, {
+              status:"INVALID_EVIDENCE", closed_at:iso(),
+              metadata:{...trade.metadata,evaluation_version:PAPER_EVALUATION_VERSION,
+                evidence_error:"Insufficient persisted price coverage within the holding period"}
+            });
+          }
+          continue;
         }
+        const qty = finite(trade.quantity);
+        if (!(qty > 0)) continue;
+        const entry = finite(trade.entry_price), exit = result.exit_price;
+        const gross = (String(trade.side).toUpperCase() === "LONG" ? exit-entry : entry-exit)*qty;
+        const costs = finite(trade.fees) + finite(trade.slippage) +
+          Math.abs(exit*qty)*(PAPER_FEE_RATE+PAPER_SLIPPAGE_RATE) + finite(trade.funding_cost);
+        outcome = { ...result, signal_id:trade.signal_id, evaluated_at:iso(),
+          pnl_before_cost:gross, pnl_after_cost:gross-costs,
+          cost_model:"fees_slippage_plus_recorded_funding", funding_model:"not_accrued" };
+        await db("signal_outcomes", "POST", { on_conflict:"signal_id" }, outcome,
+          { Prefer:"resolution=ignore-duplicates,return=minimal" });
+        // Read the winner so concurrent managers or retries cannot close using a different result.
+        const saved = await db("signal_outcomes", "GET", { signal_id:"eq."+trade.signal_id, limit:"1" });
+        outcome = saved?.[0];
+        if (!outcome) throw new Error("Paper outcome was not persisted");
       }
-
-      let outcome = null;
-      let exitPrice = null;
-      if (t3Hit && slHit) {
-        // Conservative bar/tick ambiguity handling: earliest observed threshold wins.
-        for (const p of allPrices) {
-          const stopFirst = side === "LONG" ? p <= stop : p >= stop;
-          const targetFirst = side === "LONG" ? p >= t3 : p <= t3;
-          if (stopFirst) { outcome = "STOP_LOSS"; exitPrice = stop; break; }
-          if (targetFirst) { outcome = "TARGET_3"; exitPrice = t3; break; }
-        }
-      } else if (t3Hit) {
-        outcome = "TARGET_3"; exitPrice = t3;
-      } else if (slHit) {
-        outcome = "STOP_LOSS"; exitPrice = stop;
-      } else if (ageSeconds >= finite(meta.max_horizon_seconds, MAX_HORIZON_SECONDS)) {
-        outcome = "TIMEOUT"; exitPrice = currentPrice;
-      }
-      if (!outcome) continue;
-
-      const qty = finite(trade.quantity);
-      const gross = side === "LONG" ? (exitPrice - entry) * qty : (entry - exitPrice) * qty;
-      const exitNotional = Math.abs(exitPrice * qty);
-      const costs = finite(trade.fees) + finite(trade.slippage) + (exitNotional * PAPER_FEE_RATE) + (exitNotional * PAPER_SLIPPAGE_RATE) + finite(trade.funding_cost);
-      const net = gross - costs;
-
-      await db("paper_trades", "PATCH", {
-        paper_trade_id: "eq." + trade.paper_trade_id
-      }, {
-        closed_at: iso(),
-        exit_price: exitPrice,
-        realized_pnl: net,
-        status: "CLOSED"
+      await db("paper_trades", "PATCH", { paper_trade_id:"eq."+trade.paper_trade_id }, {
+        closed_at:outcome.exit_at || outcome.evaluated_at,
+        exit_price:outcome.exit_price, realized_pnl:outcome.pnl_after_cost, status:"CLOSED"
       });
-
-      await db("signal_outcomes", "POST", { on_conflict: "signal_id" }, {
-        signal_id: trade.signal_id,
-        evaluated_at: iso(),
-        outcome,
-        t1_hit: t1Hit,
-        t2_hit: t2Hit,
-        t3_hit: t3Hit,
-        sl_hit: slHit,
-        exit_price: exitPrice,
-        pnl_before_cost: gross,
-        pnl_after_cost: net,
-        holding_seconds: Math.min(finite(meta.max_horizon_seconds, MAX_HORIZON_SECONDS), ageSeconds),
-        mfe,
-        mae,
-        evaluation_version: "paper_v2"
-      }, { Prefer: "resolution=merge-duplicates,return=minimal" });
-    } catch (e) {
-      recordError(e, "paper_trade:" + trade.paper_trade_id);
-    }
+    } catch (e) { recordError(e, "paper_trade:" + trade.paper_trade_id); }
   }
 }
 
@@ -2230,7 +2098,7 @@ async function dashboardPayload() {
         secondary: "SCALP_CONDITIONAL",
         note: "Current validated model horizon is H1; multi-hour and multi-day swing horizons require separate validation."
       },
-      safety: { paperOnly: true, executionEnabled: false, signalReady: productionSignalReady(), statisticalSignalReady: modelSignalReady(), signalGate: productionSignalGate() },
+      safety: { paperEvaluation: {version:PAPER_EVALUATION_VERSION,maxPathGapSeconds:MAX_PATH_GAP_MS/1000,fundingModel:"not_accrued"}, paperOnly: true, executionEnabled: false, signalReady: productionSignalReady(), statisticalSignalReady: modelSignalReady(), signalGate: productionSignalGate() },
       errors
     },
     market: publicMarket(),
@@ -2290,7 +2158,7 @@ async function healthPayload() {
       storageBackend: primaryStore.backend
     },
     bootStage: state.bootStage,
-    runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
+    runtime: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     source: "BYBIT_PUBLIC_MARKET_DATA_VIA_CLOUDFLARE",
     storageBackend: primaryStore.backend,
     archiveBackend: "r2",
@@ -2299,6 +2167,7 @@ async function healthPayload() {
     historyWarmup: state.historyWarmup,
     paperOnly: true,
     executionEnabled: false,
+    paperEvaluation: {version:PAPER_EVALUATION_VERSION,maxPathGapSeconds:MAX_PATH_GAP_MS/1000,fundingModel:"not_accrued"},
     signalReady: productionSignalReady(),
     statisticalSignalReady: modelSignalReady(),
     signalGate: productionSignalGate(),
@@ -2458,7 +2327,7 @@ async function boot() {
   log("engine_ready", {
     assets: state.assets.length,
     paperOnly: true,
-    runtime: process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
+    runtime: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RUNTIME_REV || process.env.DEPLOY_REVISION || "unknown",
     liveTradeStream: readiness.live,
     liveOrderbookStream: readiness.bookLive,
     storageLive: readiness.storageLive,
