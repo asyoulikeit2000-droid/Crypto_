@@ -85,6 +85,8 @@ test("pipeline approves only when every strategy economics portfolio and risk ga
   assert.equal(r.allowed,true);
   assert.equal(r.stage,"approved");
   assert.equal(r.intent.strategyFamily,"TREND_CONTINUATION_V1");
+  assert.equal(r.intent.effectiveLeverage,2);
+  assert.ok(r.intent.notionalToEquity<=1);
   assert.ok(r.intent.expectedNetUsd>=6.5);
 });
 
