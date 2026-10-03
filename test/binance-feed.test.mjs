@@ -55,7 +55,7 @@ test("feed builds current Binance split websocket URLs without requiring API cre
   assert.match(feed.urls.public,/\/public\/stream\?streams=/);
   assert.match(feed.urls.market,/\/market\/stream\?streams=/);
   assert.ok(feed.urls.public.includes("btcusdt@depth20@100ms"));
-  assert.ok(feed.urls.public.includes("solusdt@aggTrade"));
+  assert.ok(feed.urls.market.includes("solusdt@aggTrade"));
   assert.ok(feed.urls.market.includes("solusdt@markPrice@1s"));
   assert.equal(feed.urls.public.includes("%40"),false);
 });
