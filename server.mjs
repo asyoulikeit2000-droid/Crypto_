@@ -2197,9 +2197,12 @@ async function dashboardPayload() {
     limit: "30"
   });
   const errors = state.errors.slice(-10);
+  const readiness = healthReadiness();
   return {
+    generatedAt: iso(),
     health: {
-      status: state.ready ? "ready" : "starting",
+      ready: readiness.ready,
+      status: readiness.ready ? "ready" : "degraded",
       bootStage: state.bootStage,
       startedAt: state.startedAt,
       lastTrade: state.lastTrade,
@@ -2216,7 +2219,9 @@ async function dashboardPayload() {
       validation: state.validation,
       model: { id: MODEL_ID, featureVersion: FEATURE_VERSION, horizon: "H1" },
       storageBackend: primaryStore.backend,
-      storageLive: healthReadiness().storageLive,
+      storageLive: readiness.storageLive,
+      lastStorageSuccessAt: state.lastStorageSuccessAt,
+      lastStorageFailureAt: state.lastStorageFailureAt,
       paperOnly: true,
       executionEnabled: false,
       horizonResearch: state.horizonResearch,
