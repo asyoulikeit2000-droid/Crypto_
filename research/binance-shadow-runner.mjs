@@ -338,6 +338,7 @@ export function createBinanceShadowRunner({
         btcFeatures:symbol==="BTCUSDT" ? features : btcFeatures,
         performance,
         performanceProfile,
+        executionQualityProfile,
         researchMode:true
       });
 
