@@ -91,6 +91,28 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
     return db("strategy_trials","GET",params);
   }
 
+  async function loadOpen({ family, limit=10000 } = {}) {
+    const params={status:"eq.OPEN",order:"opened_at.asc",limit:String(limit)};
+    if (family) params.family="eq."+family;
+    return db("strategy_trials","GET",params);
+  }
+
+  async function accountingState({ initialEquityUsd=5000 } = {}) {
+    const rows=await loadClosed({});
+    const ordered=[...rows].sort((a,b)=>String(a.closed_at||"").localeCompare(String(b.closed_at||"")));
+    let equityUsd=Number(initialEquityUsd||0);
+    let peakEquityUsd=equityUsd;
+    let realizedNetUsd=0;
+    for(const row of ordered){
+      const net=Number(row?.outcome?.netUsd);
+      if(!Number.isFinite(net)) continue;
+      realizedNetUsd+=net;
+      equityUsd+=net;
+      peakEquityUsd=Math.max(peakEquityUsd,equityUsd);
+    }
+    return {initialEquityUsd:Number(initialEquityUsd||0),equityUsd,peakEquityUsd,realizedNetUsd,closedCount:ordered.length};
+  }
+
   function toTrade(x) {
     if (!x?.outcome?.valid) return null;
     return {
@@ -118,5 +140,5 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
     return buildPerformanceProfile(trades,{recentCount,foldCount});
   }
 
-  return { openTrial, closeTrial, loadClosed, performance, performanceProfile };
+  return { openTrial, closeTrial, loadClosed, loadOpen, accountingState, performance, performanceProfile };
 }
