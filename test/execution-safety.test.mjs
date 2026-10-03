@@ -23,16 +23,16 @@ function goodIntent() {
     requestedNotionalUsd: 3000,
     effectiveLeverage: 2,
     expectedNetUsd: 8,
-    maxLossAtStopUsd: 80,
+    maxLossAtStopUsd: 10,
     rewardRisk: 1.5
   };
 }
 
 function goodAccount() {
   return {
-    equityUsd: 50_000,
-    peakEquityUsd: 50_000,
-    freeMarginUsd: 20_000,
+    equityUsd: 5_000,
+    peakEquityUsd: 5_000,
+    freeMarginUsd: 5_000,
     dailyPnlUsd: 0,
     openPositions: 0,
     killSwitch: false,
@@ -82,7 +82,7 @@ test("kill switch, stale data and weak expectancy independently block trading", 
 test("risk engine blocks excessive stop loss, leverage, daily loss and drawdown", () => {
   const config = goodConfig("paper");
   const intent = { ...goodIntent(), effectiveLeverage: 5, maxLossAtStopUsd: 500 };
-  const account = { ...goodAccount(), equityUsd: 47_000, peakEquityUsd: 50_000, dailyPnlUsd: -1000 };
+  const account = { ...goodAccount(), equityUsd: 47_000, peakEquityUsd: 5_000, dailyPnlUsd: -1000 };
   const result = evaluateTradeIntent(intent, account, goodMarket(), config);
   assert.ok(result.failed.includes("leverageLimit"));
   assert.ok(result.failed.includes("singleTradeRiskLimit"));
@@ -112,8 +112,8 @@ test("expected net floor scales with account equity", () => {
   });
   const account = {
     ...goodAccount(),
-    equityUsd: 50_000,
-    peakEquityUsd: 50_000,
+    equityUsd: 5_000,
+    peakEquityUsd: 5_000,
     freeMarginUsd: 50_000
   };
   const weak = evaluateTradeIntent({ ...goodIntent(), requestedNotionalUsd: 3000, expectedNetUsd: 20 }, account, goodMarket(), config);
