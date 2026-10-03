@@ -1,5 +1,6 @@
 import { routeStrategy } from "../strategy/router.mjs";
 import { sizePosition } from "../strategy/equity-risk.mjs";
+import { rankStrategyContexts } from "./context-ranking.mjs";
 
 function finite(v, fallback = 0) {
   const n=Number(v);
@@ -58,6 +59,7 @@ export function createBinanceShadowRunner({
   const lastClosedAt=new Map();
   const performance={};
   let performanceProfile={};
+  let rankings=[];
   let timer=null;
   let performanceTimer=null;
   let equityUsd=finite(initialEquityUsd,5000);
@@ -73,6 +75,13 @@ export function createBinanceShadowRunner({
         for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
           performance[family]=performanceProfile?.families?.[family] || {};
         }
+        rankings=rankStrategyContexts(performanceProfile);
+        onStatus({
+          event:"researchRanking",
+          sampleCount:performanceProfile?.sampleCount || 0,
+          top:rankings.slice(0,10),
+          at:Date.now()
+        });
       } else {
         for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
           performance[family]=await lab.performance({family,recentCount:100,foldCount:5});
@@ -257,6 +266,7 @@ export function createBinanceShadowRunner({
       cooldowns:Object.fromEntries([...lastClosedAt.entries()]),
       performance:{...performance},
       performanceProfile,
+      rankings:[...rankings],
       equityUsd,
       peakEquityUsd:peakEquity
     })
