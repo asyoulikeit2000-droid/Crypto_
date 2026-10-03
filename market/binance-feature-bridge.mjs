@@ -118,5 +118,19 @@ export function createBinanceFeatureBridge({ intelligence } = {}) {
     return rows.filter(x=>finite(x.t)>=from && finite(x.t)<=to);
   }
 
-  return { id,onTrade,onBook,onMark,onOpenInterest,features,tradesSince,fundingEventsSince };
+  function bookSnapshot(symbol) {
+    const b=metadata.get(id(symbol))?.book;
+    if(!b) return null;
+    return {
+      symbol:String(symbol||"").toUpperCase(),
+      t:finite(b.t,null),
+      bids:Array.isArray(b.bids)?b.bids.map(x=>[finite(x?.[0]),finite(x?.[1])]).filter(x=>x[0]>0&&x[1]>=0):[],
+      asks:Array.isArray(b.asks)?b.asks.map(x=>[finite(x?.[0]),finite(x?.[1])]).filter(x=>x[0]>0&&x[1]>=0):[],
+      bestBid:finite(b.bestBid,null),
+      bestAsk:finite(b.bestAsk,null),
+      spreadBps:finite(b.spreadBps,null)
+    };
+  }
+
+  return { id,onTrade,onBook,onMark,onOpenInterest,features,tradesSince,fundingEventsSince,bookSnapshot };
 }
