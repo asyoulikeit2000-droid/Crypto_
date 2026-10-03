@@ -99,3 +99,26 @@ test("order state machine rejects unsafe jumps", () => {
   assert.equal(terminalOrderState("CLOSED"), true);
   assert.equal(terminalOrderState("FILLED"), false);
 });
+
+
+test("expected net floor scales with account equity", () => {
+  const config = loadExecutionConfig({
+    EXECUTION_MODE: "paper",
+    EXECUTION_EXCHANGE: "BINANCE",
+    MIN_EXPECTED_NET_USD: "6.5",
+    MIN_EXPECTED_NET_EQUITY_PCT: "0.001",
+    MAX_POSITION_NOTIONAL_USD: "50000",
+    MAX_EFFECTIVE_LEVERAGE: "3"
+  });
+  const account = {
+    ...goodAccount(),
+    equityUsd: 50_000,
+    peakEquityUsd: 50_000,
+    freeMarginUsd: 50_000
+  };
+  const weak = evaluateTradeIntent({ ...goodIntent(), requestedNotionalUsd: 3000, expectedNetUsd: 20 }, account, goodMarket(), config);
+  assert.equal(weak.allowed, false);
+  assert.equal(weak.metrics.expectedNetFloorUsd, 50);
+  const strong = evaluateTradeIntent({ ...goodIntent(), requestedNotionalUsd: 3000, expectedNetUsd: 55 }, account, goodMarket(), config);
+  assert.equal(strong.failed.includes("expectedNetTooLow"), false);
+});
