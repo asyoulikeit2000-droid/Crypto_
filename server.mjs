@@ -13,6 +13,9 @@ import { createD1Compat, d1Configured } from "./storage/d1-store.mjs";
 import { startRetentionLoop } from "./storage/retention.mjs";
 import { evaluateDerivativeContext, derivePositionContext } from "./swing-context.mjs";
 
+if (process.env.ENGINE_PROFILE === "free_mtf") {
+  await import("./free-engine.mjs");
+} else {
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -2401,3 +2404,5 @@ process.on("SIGINT", () => {
   log("shutdown", { signal: "SIGINT" });
   server.close(() => process.exit(0));
 });
+
+}
