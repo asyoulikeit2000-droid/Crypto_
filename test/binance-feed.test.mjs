@@ -9,8 +9,8 @@ import {
 test("Binance stream plan uses split public and market endpoints",()=>{
   const p=publicStreams(["BTCUSDT"]);
   const m=marketStreams(["BTCUSDT"]);
-  assert.deepEqual(p,["btcusdt@depth20@100ms","btcusdt@bookTicker","btcusdt@aggTrade"]);
-  assert.deepEqual(m,["btcusdt@markPrice@1s"]);
+  assert.deepEqual(p,["btcusdt@depth20@100ms","btcusdt@bookTicker"]);
+  assert.deepEqual(m,["btcusdt@aggTrade","btcusdt@markPrice@1s"]);
   assert.match(combinedUrl("wss://fstream.binance.com/public/stream?streams=",p),/\/public\/stream\?streams=/);
 });
 
