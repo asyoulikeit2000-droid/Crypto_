@@ -49,6 +49,57 @@ export function targetMakerFill({
   return {filled:false,reason:"targetNotTradedThrough"};
 }
 
+
+export function resolveExitTrigger({
+  positionSide,
+  stopPrice,
+  targetPrice,
+  trades=[],
+  sinceMs=0,
+  untilMs=Date.now(),
+  bestBid,
+  bestAsk,
+  expired=false
+} = {}) {
+  const side=upper(positionSide);
+  const stop=finite(stopPrice);
+  const target=finite(targetPrice);
+  if(!["BUY","SELL"].includes(side) || !(stop>0) || !(target>0)){
+    return {triggered:false,reason:"invalidBarriers"};
+  }
+
+  const rows=(trades||[])
+    .filter(x=>finite(x?.t)>=finite(sinceMs) && finite(x?.t)<=finite(untilMs))
+    .sort((a,b)=>finite(a.t)-finite(b.t));
+
+  for(const trade of rows){
+    const p=finite(trade?.price);
+    const aggressor=upper(trade?.side);
+    if(!(p>0)) continue;
+
+    if(side==="BUY"){
+      if(p<=stop) return {triggered:true,exitReason:"STOP",at:finite(trade.t,untilMs),exitLiquidity:"TAKER",observedTradePrice:p};
+      if(aggressor==="BUY" && p>target) return {triggered:true,exitReason:"TARGET",at:finite(trade.t,untilMs),exitLiquidity:"MAKER",observedTradePrice:p};
+    } else {
+      if(p>=stop) return {triggered:true,exitReason:"STOP",at:finite(trade.t,untilMs),exitLiquidity:"TAKER",observedTradePrice:p};
+      if(aggressor==="SELL" && p<target) return {triggered:true,exitReason:"TARGET",at:finite(trade.t,untilMs),exitLiquidity:"MAKER",observedTradePrice:p};
+    }
+  }
+
+  const bid=finite(bestBid);
+  const ask=finite(bestAsk);
+  if(side==="BUY" && bid>0 && bid<=stop){
+    return {triggered:true,exitReason:"STOP",at:finite(untilMs),exitLiquidity:"TAKER",observedTradePrice:bid,reason:"bookCrossedStop"};
+  }
+  if(side==="SELL" && ask>0 && ask>=stop){
+    return {triggered:true,exitReason:"STOP",at:finite(untilMs),exitLiquidity:"TAKER",observedTradePrice:ask,reason:"bookCrossedStop"};
+  }
+  if(expired){
+    return {triggered:true,exitReason:"TIME",at:finite(untilMs),exitLiquidity:"TAKER",reason:"maxHold"};
+  }
+  return {triggered:false,reason:"noExit"};
+}
+
 export function walkMarketExit({
   positionSide,
   positionQty,
