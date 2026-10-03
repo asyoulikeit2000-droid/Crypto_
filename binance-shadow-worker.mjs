@@ -120,6 +120,9 @@ setInterval(()=>{
     makerFillRate:s.runner?.executionQualityProfile?.attempts?.fillRate ?? null,
     makerFilledPerDay:s.runner?.executionQualityProfile?.attempts?.filledPerDay || 0,
     fillStats:s.runner?.fillStats || {},
+    reservedSlots:s.runner?.exposure?.reservedSlots ?? null,
+    totalNotionalPct:s.runner?.exposure?.totalNotionalPct ?? null,
+    aggregateRiskPct:s.runner?.exposure?.aggregateRiskPct ?? null,
     shadowEquityUsd:s.runner?.equityUsd ?? null
   }));
 },60000);
