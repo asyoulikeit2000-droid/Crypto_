@@ -7,16 +7,19 @@ import { createIntelligenceEngine } from "../intelligence-engine.mjs";
 test("signal gate requires every production condition", () => {
   const good = evaluateSignalReadiness(
     { status: "ACTIVE" },
-    { status: "COMPLETE", evaluatedAt: "2026-10-01T00:00:00Z", test: { n: 20, winRate: 0.4, avgPnl: 0.01, totalPnl: 0.2 } }
+    { status: "COMPLETE", split:{method:"purged_expanding_window"}, folds:Array(5).fill({}), costCoverageComplete:true, evaluatedAt: "2026-10-01T00:00:00Z", test: { n: 20, winRate: 0.4, avgPnl: 0.01, totalPnl: 0.2 } }
   );
   assert.equal(good.ready, true);
-  for (const mutation of [
-    [{status:"WARMING"}, {status:"COMPLETE",test:{n:20,avgPnl:.01,totalPnl:.2}}],
-    [{status:"ACTIVE"}, {status:"RUNNING",test:{n:20,avgPnl:.01,totalPnl:.2}}],
-    [{status:"ACTIVE"}, {status:"COMPLETE",test:{n:19,avgPnl:.01,totalPnl:.2}}],
-    [{status:"ACTIVE"}, {status:"COMPLETE",test:{n:20,avgPnl:0,totalPnl:.2}}],
-    [{status:"ACTIVE"}, {status:"COMPLETE",test:{n:20,avgPnl:.01,totalPnl:0}}]
-  ]) assert.equal(evaluateSignalReadiness(...mutation).ready, false);
+  for (const [key,value] of Object.entries({status:"RUNNING",costCoverageComplete:false,folds:[],split:{method:"chronological_70_30"}})) {
+    const fixture={status:"COMPLETE",split:{method:"purged_expanding_window"},folds:Array(5).fill({}),costCoverageComplete:true,test:{n:20,avgPnl:.01,totalPnl:.2}};
+    fixture[key]=value;
+    assert.equal(evaluateSignalReadiness({status:"ACTIVE"},fixture).ready,false);
+  }
+  for (const patch of [{n:19},{avgPnl:0},{totalPnl:0}]) {
+    const fixture={status:"COMPLETE",split:{method:"purged_expanding_window"},folds:Array(5).fill({}),costCoverageComplete:true,test:{n:20,avgPnl:.01,totalPnl:.2,...patch}};
+    assert.equal(evaluateSignalReadiness({status:"ACTIVE"},fixture).ready,false);
+  }
+  assert.equal(evaluateSignalReadiness({status:"WARMING"},{status:"COMPLETE",split:{method:"purged_expanding_window"},folds:Array(5).fill({}),costCoverageComplete:true,test:{n:20,avgPnl:.01,totalPnl:.2}}).ready,false);
 });
 
 test("universe rejects stable, wrapped and leveraged instruments", () => {
