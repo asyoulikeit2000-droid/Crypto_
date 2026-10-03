@@ -67,6 +67,18 @@ function profileFor(symbol){
   };
 }
 
+function executionProfileFor(symbol){
+  return {
+    contexts:{
+      [`TREND_CONTINUATION_V1|${symbol}|TREND_UP`]:{
+        attemptCount:60,completedCount:60,filledCount:36,expiredCount:24,pendingCount:0,
+        fillRate:0.60,expiryRate:0.40,avgFillLatencyMs:5000,p90FillLatencyMs:10000,
+        attemptsPerDay:40,filledPerDay:24
+      }
+    }
+  };
+}
+
 const costs={
   entryFeeRate:0.0002,
   exitFeeRate:0.0005,
@@ -84,6 +96,7 @@ test("pipeline approves only when every strategy economics portfolio and risk ga
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{TREND_CONTINUATION_V1:promotedStats},
     performanceProfile:profileFor("BTCUSDT"),
+    executionQualityProfile:executionProfileFor("BTCUSDT"),
     account,
     portfolio:{positions:[]},
     market,
@@ -107,6 +120,7 @@ test("pipeline blocks a strategy with no proven performance",()=>{
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{},
     performanceProfile:{},
+    executionQualityProfile:{},
     account,
     portfolio:{positions:[]},
     market,
@@ -126,6 +140,7 @@ test("pipeline blocks mismatched execution venue",()=>{
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{TREND_CONTINUATION_V1:promotedStats},
     performanceProfile:profileFor("BTCUSDT"),
+    executionQualityProfile:executionProfileFor("BTCUSDT"),
     account,
     portfolio:{positions:[]},
     market:{...market,exchange:"BYBIT",bookExchange:"BYBIT"},
@@ -145,6 +160,7 @@ test("pipeline blocks same-direction concentration",()=>{
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{TREND_CONTINUATION_V1:promotedStats},
     performanceProfile:profileFor("ETHUSDT"),
+    executionQualityProfile:executionProfileFor("ETHUSDT"),
     account:{...account,openPositions:1},
     portfolio:{positions:[{symbol:"BTCUSDT",side:"BUY",notionalUsd:4500}]},
     market,
@@ -156,4 +172,26 @@ test("pipeline blocks same-direction concentration",()=>{
   });
   assert.equal(r.allowed,false);
   assert.equal(r.stage,"portfolio");
+});
+
+
+test("pipeline blocks future execution when maker fill quality is unproven",()=>{
+  const r=buildTradeDecision({
+    symbol:"BTCUSDT",
+    features,
+    btcFeatures:{return_5m:0.0005,return_15m:0.001},
+    performance:{TREND_CONTINUATION_V1:promotedStats},
+    performanceProfile:profileFor("BTCUSDT"),
+    executionQualityProfile:{},
+    account,
+    portfolio:{positions:[]},
+    market,
+    config,
+    costAssumptions:costs,
+    stopDistancePct:0.0025,
+    researchMode:false
+  });
+  assert.equal(r.allowed,false);
+  assert.equal(r.stage,"strategy");
+  assert.equal(r.reason,"executionQualityUnproven");
 });

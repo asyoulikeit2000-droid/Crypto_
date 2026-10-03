@@ -67,6 +67,7 @@ export function createBinanceShadowRunner({
   const lastAttemptAt=new Map();
   const performance={};
   let performanceProfile={};
+  let executionQualityProfile={};
   let rankings=[];
   let timer=null;
   let performanceTimer=null;
@@ -157,10 +158,17 @@ export function createBinanceShadowRunner({
         for (const family of ["LIQUIDITY_REVERSION_V1","TREND_CONTINUATION_V1"]) {
           performance[family]=performanceProfile?.families?.[family] || {};
         }
-        rankings=rankStrategyContexts(performanceProfile);
+        if (typeof lab.executionQualityProfile === "function") {
+          executionQualityProfile=await lab.executionQualityProfile({minThroughputWindowHours:6});
+        }
+        rankings=rankStrategyContexts(performanceProfile,executionQualityProfile);
         onStatus({
           event:"researchRanking",
           sampleCount:performanceProfile?.sampleCount || 0,
+          attemptCount:executionQualityProfile?.attempts?.attemptCount || 0,
+          completedAttemptCount:executionQualityProfile?.attempts?.completedCount || 0,
+          fillRate:executionQualityProfile?.attempts?.fillRate ?? null,
+          filledPerDay:executionQualityProfile?.attempts?.filledPerDay || 0,
           top:rankings.slice(0,10),
           at:Date.now()
         });
@@ -330,6 +338,7 @@ export function createBinanceShadowRunner({
         btcFeatures:symbol==="BTCUSDT" ? features : btcFeatures,
         performance,
         performanceProfile,
+        executionQualityProfile,
         researchMode:true
       });
 
@@ -477,6 +486,7 @@ export function createBinanceShadowRunner({
       cooldowns:Object.fromEntries([...lastClosedAt.entries()]),
       performance:{...performance},
       performanceProfile,
+      executionQualityProfile,
       rankings:[...rankings],
       fillStats:{...fillStats},
       equityUsd,
