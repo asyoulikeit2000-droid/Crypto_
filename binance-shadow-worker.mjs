@@ -42,9 +42,31 @@ process.on("SIGTERM",()=>shutdown("SIGTERM"));
 process.on("SIGINT",()=>shutdown("SIGINT"));
 
 await service.start();
-console.log(JSON.stringify({
+console.log("shadow_worker_running "+JSON.stringify({
   service:"binance-shadow-research",
   status:"RUNNING",
   liveOrdersPossible:false,
   symbols:service.state().symbols
 }));
+
+setInterval(()=>{
+  const s=service.state();
+  const symbolFreshness={};
+  for (const [symbol,row] of Object.entries(s.lastFeedStatus?.symbols || {})) {
+    symbolFreshness[symbol]={
+      tradeFresh:Boolean(row.tradeFresh),
+      bookFresh:Boolean(row.bookFresh),
+      markFresh:Boolean(row.markFresh)
+    };
+  }
+  console.log("shadow_heartbeat "+JSON.stringify({
+    service:"binance-shadow-research",
+    liveOrdersPossible:false,
+    feedHealthy:s.lastFeedStatus?.healthy === true,
+    connected:s.lastFeedStatus?.connected ?? null,
+    expectedConnections:s.lastFeedStatus?.expectedConnections ?? null,
+    symbolFreshness,
+    openTrials:s.runner?.openTrials?.length || 0,
+    shadowEquityUsd:s.runner?.equityUsd ?? null
+  }));
+},60000);
