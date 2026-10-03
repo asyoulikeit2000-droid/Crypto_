@@ -4,6 +4,16 @@ import { loadExecutionConfig } from "../execution/config.mjs";
 import { createShadowBroker } from "../execution/shadow-broker.mjs";
 import { evaluateVenueAlignment, makeClientOrderId } from "../execution/venue-policy.mjs";
 
+const costAssumptions = {
+  entryFeeRate: 0.0002,
+  exitFeeRate: 0.0005,
+  entrySlippageBps: 0.5,
+  exitSlippageBps: 1,
+  spreadCrossingBps: 0.5,
+  fundingRateAbs: 0.0001,
+  expectedFundingPeriods: 1
+};
+
 const config = loadExecutionConfig({
   EXECUTION_MODE: "paper",
   EXECUTION_EXCHANGE: "BINANCE",
@@ -17,7 +27,7 @@ const intent = {
   side: "BUY",
   requestedNotionalUsd: 3000,
   effectiveLeverage: 2,
-  expectedNetUsd: 8,
+  expectedGrossUsd: 13,
   maxLossAtStopUsd: 80,
   rewardRisk: 1.5
 };
@@ -53,7 +63,7 @@ test("venue policy rejects using a different exchange book for execution", () =>
 
 test("shadow broker approves a valid intent but never submits it", async () => {
   const decisions = [];
-  const broker = createShadowBroker({ config, onDecision: d => decisions.push(d) });
+  const broker = createShadowBroker({ config, costAssumptions, onDecision: d => decisions.push(d) });
   const result = await broker.submit({ intent, account, market: binanceMarket });
   assert.equal(result.accepted, true);
   assert.equal(result.shadowOnly, true);
@@ -62,7 +72,7 @@ test("shadow broker approves a valid intent but never submits it", async () => {
 });
 
 test("shadow broker rejects otherwise-good trade when venue data mismatches", async () => {
-  const broker = createShadowBroker({ config });
+  const broker = createShadowBroker({ config, costAssumptions });
   const result = await broker.submit({
     intent,
     account,
