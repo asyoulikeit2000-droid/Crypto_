@@ -6,13 +6,15 @@ import {
   resolveBinanceResearchUniverse
 } from "../market/binance-research-universe.mjs";
 
+const BASE_NOW=1_800_000_000_000;
 const instrument=s=>({
   symbol:s,
   baseAsset:s.replace(/USDT$/,""),
   quoteAsset:"USDT",
   marginAsset:"USDT",
   status:"TRADING",
-  contractType:"PERPETUAL"
+  contractType:"PERPETUAL",
+  onboardDate:BASE_NOW-365*86_400_000
 });
 
 test("selector rejects stable leveraged and non-perpetual instruments",()=>{
@@ -36,7 +38,7 @@ test("ranking keeps BTC pinned and prefers liquid tight-spread contracts",()=>{
     {symbol:"SOLUSDT",bidPrice:"149.99",askPrice:"150"},
     {symbol:"XRPUSDT",bidPrice:"0.999",askPrice:"1.001"}
   ];
-  const r=rankBinanceResearchUniverse({exchangeInfo,tickers,books,maxAssets:3,pinned:["BTCUSDT"]});
+  const r=rankBinanceResearchUniverse({exchangeInfo,tickers,books,maxAssets:3,pinned:["BTCUSDT"],nowMs:BASE_NOW});
   assert.equal(r.length,3);
   assert.equal(r[0].symbol,"BTCUSDT");
   assert.equal(r[0].pinned,true);
@@ -59,4 +61,24 @@ test("resolver uses only public Binance endpoints and returns ranked symbols",as
   });
   const r=await resolveBinanceResearchUniverse({fetchImpl,maxAssets:2});
   assert.deepEqual(r.map(x=>x.symbol),["BTCUSDT","ETHUSDT"]);
+});
+
+
+test("newly onboarded contracts are excluded even when volume is high",()=>{
+  const exchangeInfo=[
+    instrument("BTCUSDT"),
+    {...instrument("NEWUSDT"),onboardDate:BASE_NOW-5*86_400_000}
+  ];
+  const tickers=[
+    {symbol:"BTCUSDT",quoteVolume:"1000000000",count:"200000",lastPrice:"60000"},
+    {symbol:"NEWUSDT",quoteVolume:"5000000000",count:"900000",lastPrice:"1"}
+  ];
+  const books=[
+    {symbol:"BTCUSDT",bidPrice:"59999",askPrice:"60000"},
+    {symbol:"NEWUSDT",bidPrice:"0.9999",askPrice:"1.0001"}
+  ];
+  const r=rankBinanceResearchUniverse({
+    exchangeInfo,tickers,books,maxAssets:10,pinned:["BTCUSDT"],nowMs:BASE_NOW,minOnboardAgeDays:30
+  });
+  assert.deepEqual(r.map(x=>x.symbol),["BTCUSDT"]);
 });
