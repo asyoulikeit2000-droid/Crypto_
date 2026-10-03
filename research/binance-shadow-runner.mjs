@@ -46,6 +46,7 @@ export function createBinanceShadowRunner({
   maxHoldMs=90*60*1000,
   reentryCooldownMs=5*60*1000,
   performanceRefreshMs=5*60*1000,
+  reentryCooldownMs=5*60*1000,
   onStatus=()=>{},
   setRepeater=setInterval,
   clearRepeater=clearInterval
