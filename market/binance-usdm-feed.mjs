@@ -27,17 +27,17 @@ function parseMessage(raw) {
 
 export function publicStreams(symbols = []) {
   return [...new Set(symbols.map(lowerSymbol).filter(Boolean))]
-    .flatMap(s => [`${s}@depth20@100ms`, `${s}@bookTicker`]);
+    .flatMap(s => [`${s}@depth20@100ms`, `${s}@bookTicker`, `${s}@aggTrade`]);
 }
 
 export function marketStreams(symbols = []) {
   return [...new Set(symbols.map(lowerSymbol).filter(Boolean))]
-    .flatMap(s => [`${s}@aggTrade`, `${s}@markPrice@1s`]);
+    .map(s => `${s}@markPrice@1s`);
 }
 
 export function combinedUrl(base, streams) {
   if (!streams?.length) throw new Error("streams required");
-  return base + streams.map(encodeURIComponent).join("/");
+  return base + streams.join("/");
 }
 
 export function normalizeAggTrade(d = {}) {
@@ -169,6 +169,7 @@ export function createBinanceUsdmFeed({
   let staleTimer = null;
   let ageTimer = null;
   let reconnectTimer = null;
+  const connectWatchdogs = new Map();
 
   function updateStatus(symbol, field, t = Date.now()) {
     const s = latest.get(symbol) || { symbol };
@@ -244,6 +245,10 @@ export function createBinanceUsdmFeed({
   }
 
   function closeSockets(reason = "restart") {
+    for (const timer of connectWatchdogs.values()) {
+      try { clearTimer(timer); } catch {}
+    }
+    connectWatchdogs.clear();
     for (const ws of sockets.values()) {
       try { ws.close(1000,reason); } catch {}
     }
@@ -263,15 +268,69 @@ export function createBinanceUsdmFeed({
   }
 
   function attach(kind,url,handler) {
-    const ws=new WebSocketImpl(url);
+    let ws;
+    try {
+      ws=new WebSocketImpl(url);
+    } catch (error) {
+      onStatus({
+        exchange:"BINANCE",
+        healthy:false,
+        event:kind+"ConstructorError",
+        error:String(error?.message||error),
+        url,
+        at:Date.now()
+      });
+      scheduleReconnect(kind+"ConstructorError");
+      return null;
+    }
     sockets.set(kind,ws);
+
+    const watchdog=setTimer(()=>{
+      if (ws.readyState !== 1) {
+        onStatus({
+          exchange:"BINANCE",
+          healthy:false,
+          event:kind+"ConnectTimeout",
+          readyState:ws.readyState,
+          url,
+          at:Date.now()
+        });
+        scheduleReconnect(kind+"ConnectTimeout");
+      }
+    },10_000);
+    connectWatchdogs.set(kind,watchdog);
+
     ws.addEventListener?.("open",()=>{
+      const timer=connectWatchdogs.get(kind);
+      if (timer) clearTimer(timer);
+      connectWatchdogs.delete(kind);
       reconnectAttempt=0;
-      emitStatus({event:kind+"Open"});
+      emitStatus({event:kind+"Open",url});
     });
     ws.addEventListener?.("message",handler);
-    ws.addEventListener?.("error",()=>scheduleReconnect(kind+"Error"));
-    ws.addEventListener?.("close",()=> {
+    ws.addEventListener?.("error",event=>{
+      onStatus({
+        exchange:"BINANCE",
+        healthy:false,
+        event:kind+"Error",
+        error:String(event?.message||event?.error?.message||"websocket error"),
+        readyState:ws.readyState,
+        url,
+        at:Date.now()
+      });
+      scheduleReconnect(kind+"Error");
+    });
+    ws.addEventListener?.("close",event=> {
+      onStatus({
+        exchange:"BINANCE",
+        healthy:false,
+        event:kind+"Close",
+        code:event?.code ?? null,
+        reason:event?.reason ?? null,
+        readyState:ws.readyState,
+        url,
+        at:Date.now()
+      });
       if (!stopped) scheduleReconnect(kind+"Close");
     });
     return ws;
@@ -294,13 +353,16 @@ export function createBinanceUsdmFeed({
         const d=await res.json();
         const openInterest=finite(d?.openInterest);
         const t=finite(d?.time,Date.now());
-        if (openInterest != null) onOpenInterest({
-          type:"openInterest",
-          exchange:"BINANCE",
-          symbol,
-          t,
-          openInterest
-        });
+        if (openInterest != null) {
+          onOpenInterest({
+            type:"openInterest",
+            exchange:"BINANCE",
+            symbol,
+            t,
+            openInterest
+          });
+          updateStatus(symbol,"lastOpenInterestAt",t);
+        }
       } catch (error) {
         onStatus({exchange:"BINANCE",healthy:false,event:"openInterestError",symbol,error:String(error?.message||error),at:Date.now()});
       }
@@ -310,6 +372,14 @@ export function createBinanceUsdmFeed({
   function start() {
     if (!stopped) return;
     stopped=false;
+    onStatus({
+      exchange:"BINANCE",
+      healthy:false,
+      event:"starting",
+      publicUrl:combinedUrl(PUBLIC_BASE,publicStreams(wanted)),
+      marketUrl:combinedUrl(MARKET_BASE,marketStreams(wanted)),
+      at:Date.now()
+    });
     connect();
     pollOpenInterest();
     oiTimer=setRepeater(pollOpenInterest,oiPollMs);
