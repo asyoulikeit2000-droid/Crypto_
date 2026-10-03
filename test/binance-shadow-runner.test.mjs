@@ -99,7 +99,7 @@ test("shadow runner requires a plausible maker fill before opening a research tr
 
   const order=runner.state().pendingOrders[0];
   trades=[{
-    t:order.submittedAt+1000,
+    t:order.submittedAt,
     price:order.limitPrice-0.01,
     qty:order.orderQty+1,
     side:"SELL"
@@ -114,6 +114,12 @@ test("shadow runner requires a plausible maker fill before opening a research tr
   assert.equal(opened[0].entry_price,order.limitPrice);
 
   solPrice=opened[0].target_price*1.001;
+  trades.push({
+    t:Date.now(),
+    price:opened[0].target_price*1.0001,
+    qty:1,
+    side:"BUY"
+  });
   await runner.tick();
   assert.equal(closed.length,1);
   assert.equal(closed[0].exit_reason,"TARGET");

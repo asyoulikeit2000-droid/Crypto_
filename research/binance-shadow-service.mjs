@@ -90,6 +90,10 @@ export function createBinanceShadowService({
     evaluationMs:Number(env.SHADOW_EVALUATION_MS || 15000),
     maxHoldMs:Number(env.SHADOW_MAX_HOLD_MS || 5400000),
     performanceRefreshMs:Number(env.SHADOW_PERFORMANCE_REFRESH_MS || 300000),
+    makerFeeRate:Number(env.SHADOW_MAKER_FEE_RATE || costAssumptions.entryFeeRate || 0.0002),
+    takerFeeRate:Number(env.SHADOW_TAKER_FEE_RATE || costAssumptions.exitFeeRate || 0.0005),
+    legacyEntrySlippageBps:Number(env.SHADOW_ENTRY_SLIPPAGE_BPS || 0.5),
+    missingDepthPenaltyBps:Number(env.SHADOW_MISSING_DEPTH_PENALTY_BPS || 10),
     onStatus:s=>emitStatus("runner",s)
   });
 

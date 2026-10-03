@@ -49,8 +49,9 @@ export function buildMakerOrder({
 
 export function evaluateMakerFill(order, trades=[], now=Date.now()) {
   if(!order?.valid) return {status:"INVALID",filled:false,reason:order?.reason||"invalidOrder"};
+  const latest=Math.min(order.expiresAt,finite(now,Date.now()));
   const relevant=(trades||[])
-    .filter(t=>finite(t?.t)>=order.submittedAt && finite(t?.t)<=order.expiresAt)
+    .filter(t=>finite(t?.t)>=order.submittedAt && finite(t?.t)<=latest)
     .sort((a,b)=>finite(a.t)-finite(b.t));
 
   const opposingSide=order.side==="BUY" ? "SELL" : "BUY";

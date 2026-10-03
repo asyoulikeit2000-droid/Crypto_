@@ -57,7 +57,8 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
     actualSlippageUsd,
     actualFundingUsd,
     exitReason = "UNKNOWN",
-    closedAt = iso()
+    closedAt = iso(),
+    metadataDetails = {}
   } = {}) {
     if (!trial?.trial_id) throw new Error("trial required");
     const outcome=evaluateTradeOutcome({
@@ -78,7 +79,8 @@ export function createStrategyLab({ db, costAssumptions = {} } = {}) {
       closed_at:closedAt,
       status:"CLOSED",
       exit_reason:exitReason,
-      outcome
+      outcome,
+      metadata:{...(trial.metadata||{}),...(metadataDetails||{})}
     };
     await db("strategy_trials","POST",{on_conflict:"trial_id"},merged,{
       Prefer:"resolution=merge-duplicates,return=minimal"
