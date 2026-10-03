@@ -1,6 +1,8 @@
 export function evaluateSignalReadiness(calibration = {}, validation = {}) {
   const test = validation?.test || {};
   const checks = {
+    independentValidation: validation?.split?.method === "purged_expanding_window" && validation?.folds?.length >= 5,
+    costCoverageComplete: validation?.costCoverageComplete === true,
     calibrationActive: calibration?.status === "ACTIVE",
     walkForwardComplete: validation?.status === "COMPLETE",
     testSampleSufficient: Number(test.n || 0) >= 20,
