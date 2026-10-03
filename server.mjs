@@ -184,13 +184,20 @@ async function insertRows(table, rows, onConflict = null, mode = "ignore", repre
   const params = onConflict ? { on_conflict: onConflict } : {};
   const resolution = mode === "merge" ? "resolution=merge-duplicates" : "resolution=ignore-duplicates";
   params.Prefer = undefined;
-  return db(
-    table,
-    "POST",
-    params,
-    rows,
-    { Prefer: resolution + "," + (representation ? "return=representation" : "return=minimal") }
-  );
+  const chunkSize = Math.max(10, Math.min(100, Number(process.env.STORAGE_WRITE_CHUNK_SIZE || 50)));
+  const out = [];
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const written = await db(
+      table,
+      "POST",
+      params,
+      chunk,
+      { Prefer: resolution + "," + (representation ? "return=representation" : "return=minimal") }
+    );
+    if (representation && Array.isArray(written)) out.push(...written);
+  }
+  return out;
 }
 
 async function relayJson(mode, symbols = []) {
