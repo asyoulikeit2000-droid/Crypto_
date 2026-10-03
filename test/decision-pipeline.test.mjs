@@ -58,6 +58,15 @@ const promotedStats={
   symbolConcentrationPct:0.4
 };
 
+function profileFor(symbol){
+  return {
+    families:{TREND_CONTINUATION_V1:promotedStats},
+    symbols:{[`TREND_CONTINUATION_V1|${symbol}`]:promotedStats},
+    regimes:{"TREND_CONTINUATION_V1|TREND_UP":promotedStats},
+    contexts:{[`TREND_CONTINUATION_V1|${symbol}|TREND_UP`]:promotedStats}
+  };
+}
+
 const costs={
   entryFeeRate:0.0002,
   exitFeeRate:0.0005,
@@ -74,6 +83,7 @@ test("pipeline approves only when every strategy economics portfolio and risk ga
     features,
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{TREND_CONTINUATION_V1:promotedStats},
+    performanceProfile:profileFor("BTCUSDT"),
     account,
     portfolio:{positions:[]},
     market,
@@ -96,6 +106,7 @@ test("pipeline blocks a strategy with no proven performance",()=>{
     features,
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{},
+    performanceProfile:{},
     account,
     portfolio:{positions:[]},
     market,
@@ -114,6 +125,7 @@ test("pipeline blocks mismatched execution venue",()=>{
     features,
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{TREND_CONTINUATION_V1:promotedStats},
+    performanceProfile:profileFor("BTCUSDT"),
     account,
     portfolio:{positions:[]},
     market:{...market,exchange:"BYBIT",bookExchange:"BYBIT"},
@@ -132,6 +144,7 @@ test("pipeline blocks same-direction concentration",()=>{
     features,
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{TREND_CONTINUATION_V1:promotedStats},
+    performanceProfile:profileFor("ETHUSDT"),
     account:{...account,openPositions:1},
     portfolio:{positions:[{symbol:"BTCUSDT",side:"BUY",notionalUsd:4500}]},
     market,
