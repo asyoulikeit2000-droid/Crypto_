@@ -13,8 +13,11 @@ export function classifyExecutionRegime(features = {}, btc = {}) {
   const cvd2 = finite(features.cvd_2m);
   const cvd10 = finite(features.cvd_10m);
   const spread = finite(features.spread_bps, Infinity);
-  const btc5 = finite(btc.return_5m);
-  const btc15 = finite(btc.return_15m);
+  const btc5Raw = Number(btc.return_5m);
+  const btc15Raw = Number(btc.return_15m);
+  const btcAvailable = Number.isFinite(btc5Raw) && Number.isFinite(btc15Raw);
+  const btc5 = btcAvailable ? btc5Raw : 0;
+  const btc15 = btcAvailable ? btc15Raw : 0;
 
   if (features.data_fresh !== true || features.microstructure_quality !== true || spread > 6) {
     return { regime: "UNTRADEABLE", confidence: 1, reasons: ["marketQuality"] };
@@ -32,8 +35,8 @@ export function classifyExecutionRegime(features = {}, btc = {}) {
 
   const up = r15 > 0.002 && r5 > 0.0007 && cvd10 > 0.03;
   const down = r15 < -0.002 && r5 < -0.0007 && cvd10 < -0.03;
-  const btcConfirmsUp = btc15 >= -0.001 && btc5 >= -0.001;
-  const btcConfirmsDown = btc15 <= 0.001 && btc5 <= 0.001;
+  const btcConfirmsUp = btcAvailable && btc15 >= -0.001 && btc5 >= -0.001;
+  const btcConfirmsDown = btcAvailable && btc15 <= 0.001 && btc5 <= 0.001;
 
   if (up && btcConfirmsUp) {
     return {
