@@ -3,6 +3,7 @@ import { evaluateTrendContinuation } from "./trend-continuation-v1.mjs";
 import { classifyExecutionRegime } from "./regime-classifier.mjs";
 import { evaluateStrategyPromotion } from "./performance-gate.mjs";
 import { evaluateContextEvidence } from "./context-evidence.mjs";
+import { evaluateExecutionQuality } from "../research/execution-quality.mjs";
 
 const STRATEGIES = Object.freeze({
   LIQUIDITY_REVERSION_V1: evaluateLiquidityReversion,
@@ -19,6 +20,7 @@ export function routeStrategy({
   btcFeatures,
   performance = {},
   performanceProfile = {},
+  executionQualityProfile = {},
   policy = {},
   researchMode = true
 } = {}) {
@@ -48,13 +50,19 @@ export function routeStrategy({
       symbol:features?.symbol,
       regime:regime.regime
     },policy.context || {});
+    const executionKey=`${family}|${String(features?.symbol||"UNKNOWN").toUpperCase()}|${regime.regime}`;
+    const executionStats=executionQualityProfile?.contexts?.[executionKey] || {};
+    const executionQuality=evaluateExecutionQuality(executionStats,policy.execution || {});
+    const executionReady=executionQuality.status==="HEALTHY";
     const eligible = researchMode
       ? !contextEvidence.researchBlocked
-      : promotion.promoted && contextEvidence.executionEligible;
+      : promotion.promoted && contextEvidence.executionEligible && executionReady;
     candidates.push({
       ...setup,
       promotion,
       contextEvidence,
+      executionQuality,
+      executionReady,
       eligible,
       rankScore: setup.score
         + Math.max(-15, Math.min(15, finite(performance[family]?.avgNetBps) * 0.75))
@@ -72,6 +80,7 @@ export function routeStrategy({
     if (candidates.length) {
       if (researchMode) reason="contextDegraded";
       else if (candidates.every(x=>!x.promotion.promoted)) reason="noPromotedStrategy";
+      else if (candidates.some(x=>x.promotion.promoted && x.contextEvidence?.executionEligible && !x.executionReady)) reason="executionQualityUnproven";
       else reason="noContextEvidence";
     }
     return {
@@ -89,6 +98,6 @@ export function routeStrategy({
     regime,
     selected,
     candidates,
-    researchOnly: researchMode || !selected.promotion.promoted || !selected.contextEvidence.executionEligible
+    researchOnly: researchMode || !selected.promotion.promoted || !selected.contextEvidence.executionEligible || !selected.executionReady
   };
 }
