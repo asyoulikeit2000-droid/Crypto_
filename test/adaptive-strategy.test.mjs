@@ -110,11 +110,21 @@ test("router allows only a promoted strategy outside research mode", () => {
     regimes:{"TREND_CONTINUATION_V1|TREND_UP":stats},
     contexts:{"TREND_CONTINUATION_V1|BTCUSDT|TREND_UP":stats}
   };
+  const executionQualityProfile={
+    contexts:{
+      "TREND_CONTINUATION_V1|BTCUSDT|TREND_UP":{
+        attemptCount:60,completedCount:60,filledCount:36,expiredCount:24,pendingCount:0,
+        fillRate:0.60,expiryRate:0.40,avgFillLatencyMs:5000,p90FillLatencyMs:10000,
+        attemptsPerDay:40,filledPerDay:24
+      }
+    }
+  };
   const routed = routeStrategy({
     features,
     btcFeatures:{return_5m:0.0005,return_15m:0.001},
     performance:{ TREND_CONTINUATION_V1: stats },
     performanceProfile,
+    executionQualityProfile,
     researchMode:false
   });
   assert.equal(routed.action, "BUY");
@@ -137,4 +147,35 @@ test("portfolio guard blocks duplicate symbols and directional concentration", (
   assert.equal(r.allowed,false);
   assert.ok(r.failed.includes("directionalConcentration"));
   assert.ok(r.failed.includes("duplicateSymbol"));
+});
+
+
+test("router blocks future execution when economics are proven but maker execution quality is not",()=>{
+  const features={
+    ...goodQuality,
+    symbol:"BTCUSDT",
+    return_1m:0.0002,return_5m:0.0012,return_15m:0.003,realized_vol:0.002,
+    cvd_2m:0.12,cvd_10m:0.10,orderbook_imbalance:0.12
+  };
+  const stats={
+    sampleCount:500,recentSampleCount:100,avgNetBps:8,recentAvgNetBps:6,
+    netBpsStdDev:25,profitFactor:1.5,foldCount:5,positiveFolds:4,
+    maxDrawdownPct:0.03,costCoverageRatio:1.4,symbolConcentrationPct:0.4
+  };
+  const performanceProfile={
+    families:{TREND_CONTINUATION_V1:stats},
+    symbols:{"TREND_CONTINUATION_V1|BTCUSDT":stats},
+    regimes:{"TREND_CONTINUATION_V1|TREND_UP":stats},
+    contexts:{"TREND_CONTINUATION_V1|BTCUSDT|TREND_UP":stats}
+  };
+  const routed=routeStrategy({
+    features,
+    btcFeatures:{return_5m:0.0005,return_15m:0.001},
+    performance:{TREND_CONTINUATION_V1:stats},
+    performanceProfile,
+    executionQualityProfile:{},
+    researchMode:false
+  });
+  assert.equal(routed.action,"NO_TRADE");
+  assert.equal(routed.reason,"executionQualityUnproven");
 });
