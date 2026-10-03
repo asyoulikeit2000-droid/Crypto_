@@ -2,6 +2,7 @@ import { routeStrategy } from "../strategy/router.mjs";
 import { sizePosition } from "../strategy/equity-risk.mjs";
 import { rankStrategyContexts } from "./context-ranking.mjs";
 import { buildMakerOrder, evaluateMakerFill } from "./maker-fill-model.mjs";
+import { executableExitPrice, fundingCostUsd } from "./exit-accounting.mjs";
 
 function finite(v, fallback = 0) {
   const n=Number(v);
@@ -191,7 +192,8 @@ export function createBinanceShadowRunner({
     const now=Date.now();
     let closedAny=false;
     for (const [k,state] of [...open.entries()]) {
-      const price=currentPrice(state.trial.symbol);
+      const features=bridge.features(state.trial.symbol);
+      const price=executableExitPrice(features,state.trial.side);
       if (!(price>0)) continue;
       const long=state.trial.side==="BUY";
       const stopHit=long ? price<=state.trial.stop_price : price>=state.trial.stop_price;
@@ -201,8 +203,21 @@ export function createBinanceShadowRunner({
 
       const exitReason=stopHit ? "STOP" : targetHit ? "TARGET" : "TIME";
       try {
+        const fundingEvents=typeof bridge.fundingEventsSince==="function"
+          ? bridge.fundingEventsSince(state.trial.symbol,state.openedAtMs,now)
+          : [];
+        const actualFundingUsd=fundingCostUsd({
+          side:state.trial.side,
+          notionalUsd:state.trial.notional_usd,
+          openedAtMs:state.openedAtMs,
+          closedAtMs:now,
+          events:fundingEvents,
+          fallbackRate:state.trial?.metadata?.funding_rate ?? state.trial?.metadata?.feature_snapshot?.funding_rate,
+          fallbackFundingTime:state.trial?.metadata?.next_funding_time ?? state.trial?.metadata?.feature_snapshot?.next_funding_time
+        });
         const closed=await lab.closeTrial(state.trial,{
           exitPrice:price,
+          actualFundingUsd,
           exitReason,
           closedAt:new Date(now).toISOString()
         });
@@ -218,6 +233,8 @@ export function createBinanceShadowRunner({
           exitReason,
           netUsd:closed.outcome?.netUsd,
           netBps:closed.outcome?.netBps,
+          fundingUsd:actualFundingUsd,
+          exitPrice:price,
           equityUsd,
           at:now
         });
