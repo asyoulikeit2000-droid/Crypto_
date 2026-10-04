@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#07111f"><title>Private Trade Rescue</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="shell">
+<header><div><p class="eyebrow">PRIVATE · RESEARCH ONLY</p><h1>Trade Rescue Console</h1><p class="sub">Position-aware recovery and capital-preservation analysis. No execution.</p></div><div class="live"><i></i><span id="fresh">CONNECTING</span></div></header>
+
+<section class="setup card">
+<div class="field"><label>Symbol</label><input id="symbol" value="GRTUSDT"></div>
+<div class="field"><label>Direction</label><select id="direction"><option value="long">LONG</option><option value="short">SHORT</option></select></div>
+<div class="field"><label>Entry</label><input id="entry" type="number" step="0.00001" value="0.03500"></div>
+<div class="field"><label>Notional (USDT)</label><input id="notional" type="number" value="40000"></div>
+<div class="field"><label>Margin (USDT)</label><input id="margin" type="number" value="20000"></div>
+<button id="run">Analyze now</button>
+</section>
+
+<section class="hero card">
+<div><p class="eyebrow">CURRENT ACTION</p><h2 id="action">—</h2><p id="summary">Loading live market evidence…</p></div>
+<div class="confidence"><span>Confidence</span><strong id="confidence">—</strong></div>
+</section>
+
+<section class="grid metrics">
+<article class="card"><span>Live price</span><strong id="price">—</strong><small id="basis">—</small></article>
+<article class="card"><span>Unrealized PnL</span><strong id="pnl">—</strong><small id="pnlPct">—</small></article>
+<article class="card"><span>Margin ROE</span><strong id="roe">—</strong><small id="lev">—</small></article>
+<article class="card"><span>Profit path</span><strong id="profitability">—</strong><small id="need">—</small></article>
+</section>
+
+<section class="card"><div class="section-head"><div><p class="eyebrow">DECISION LEVELS</p><h3>Exact triggers</h3></div><span class="pill">COMPLETED CLOSES</span></div><div id="levels" class="levels"></div></section>
+
+<section class="grid scenarios">
+<article class="card"><p class="eyebrow bad">BEARISH / FAILURE</p><h3 id="bearStatus">—</h3><p id="bearText">—</p></article>
+<article class="card"><p class="eyebrow">BASE RECOVERY</p><h3 id="baseStatus">—</h3><p id="baseText">—</p></article>
+<article class="card"><p class="eyebrow good">BULLISH / PROFIT</p><h3 id="bullStatus">—</h3><p id="bullText">—</p></article>
+</section>
+
+<section class="grid two">
+<article class="card"><div class="section-head"><div><p class="eyebrow">LIVE DERIVATIVES</p><h3>Positioning & flow</h3></div></div><div id="derivs" class="kv"></div></article>
+<article class="card"><div class="section-head"><div><p class="eyebrow">MULTI-TIMEFRAME</p><h3>Structure</h3></div></div><div id="tf" class="kv"></div></article>
+</section>
+
+<section class="card"><div class="section-head"><div><p class="eyebrow">EVIDENCE</p><h3>Why the engine says this</h3></div><span id="score" class="pill">—</span></div><div id="evidence" class="evidence"></div><div id="unavailable" class="warn"></div></section>
+
+<footer>Research dashboard only · Binance public futures data · no execution · no guaranteed returns</footer>
+</main>
+<script src="/app.js"></script>
+</body></html>
