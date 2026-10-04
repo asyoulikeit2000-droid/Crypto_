@@ -1,4 +1,5 @@
-// private rescue dashboard build v2\nimport http from "node:http";
+// private rescue dashboard build v2
+import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
