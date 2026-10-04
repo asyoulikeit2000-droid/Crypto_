@@ -194,9 +194,10 @@ async function serveStatic(pathname,res){
 }
 
 const server=http.createServer(async(req,res)=>{
-  if(!authed(req)) return unauthorized(res);
   try{
     const url=new URL(req.url||"/","http://"+(req.headers.host||"localhost"));
+    if(req.method==="GET"&&url.pathname==="/healthz") return json(res,200,{ok:true,paperOnly:true,executionEnabled:false,time:new Date().toISOString()});
+    if(!authed(req)) return unauthorized(res);
     if(req.method==="GET"&&url.pathname==="/api/analyze") return json(res,200,await analyze(url.searchParams));
     if(req.method==="GET"&&url.pathname==="/api/health") return json(res,200,{ok:true,paperOnly:true,executionEnabled:false,binance:"public-futures",time:new Date().toISOString()});
     if(req.method==="GET") return serveStatic(url.pathname,res);
