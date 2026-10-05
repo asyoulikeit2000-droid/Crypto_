@@ -2,6 +2,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { grtFramework, decideAction } from "./rescue-strategy.mjs";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -80,20 +81,6 @@ async function recentNews(symbol){
   for(const x of dedup.slice(0,10)){if(positive.test(x.title))score+=0.25;if(negative.test(x.title))score-=0.5;}
   return {available:dedup.length>0,provider:"Google News RSS aggregation",quality:"medium",score:clamp(score,-1.5,1.5),items:dedup.slice(0,8),officialMatches:dedup.filter(x=>/thegraph\.com/i.test(x.title+" "+x.source+" "+x.link)).length};
 }
-function grtFramework(symbol,price,h1,h4,d1){
-  if(symbol==="GRTUSDT"){
-    return {hedgeTrigger:0.02790,hard4h:0.02720,reduceTrigger:0.02650,resistance1:0.02940,resistance2:0.03050,resistance3:0.03110,entryZone:0.03500,profitExtension:0.03670,source:"agreed_grt_rescue_framework"};
-  }
-  const recentSupport=h1?Math.min(h1.recentLow,h4?.recentLow??h1.recentLow):price*0.97;
-  const atr1=h1?.atr14||price*0.01;
-  const hedgeTrigger=level(Math.max(recentSupport-0.15*atr1,price-1.6*atr1),5);
-  const hard4h=level(Math.min(h4?.recentLow??recentSupport,recentSupport)-0.75*(h4?.atr14||atr1*3),5);
-  const reduceTrigger=level(hard4h-0.75*(h4?.atr14||atr1*3),5);
-  const r1=level(Math.max(h1?.ema20||price,h1?.recentHigh||price),5);
-  const r2=level(Math.max(h4?.ema20||r1,h4?.recentHigh||r1),5);
-  const r3=level(Math.max(d1?.ema20||r2,r2*1.035),5);
-  return {hedgeTrigger,hard4h,reduceTrigger,resistance1:r1,resistance2:r2,resistance3:r3,entryZone:null,profitExtension:null,source:"dynamic"};
-}
 function regimeScore(price,s){
   if(!s)return 0;let x=0;if(price>s.ema20)x+=0.5;else x-=0.5;if(s.rsi14>52)x+=0.3;else if(s.rsi14<42)x-=0.3;return x;
 }
@@ -170,13 +157,8 @@ async function analyze(params){
   if(news.available)add("Recent catalysts",news.score>0.4?1:news.score<-.4?-1:0,0.45,"medium",news.items.length+" recent items; score "+news.score.toFixed(2),news.provider);
 
   const h1Close=h1?.lastClosed?.close,h4Close=h4?.lastClosed?.close;
-  let action="HOLD",secondary="ADD NOTHING";
-  if(direction==="long"){
-    if(h4Close!=null&&h4Close<fw.reduceTrigger){action="REDUCE";secondary="CAPITAL PRESERVATION";}
-    else if((h4Close!=null&&h4Close<fw.hard4h)||(h1Close!=null&&h1Close<fw.hedgeTrigger)){action="HEDGE";secondary=h4Close<fw.hard4h?"TARGET ~50% HEDGE":"TARGET ~25% HEDGE";}
-    else if(hedgeNotional>0&&h4Close!=null&&h4Close>=fw.resistance2&&score>0.5){action="EXIT-HEDGE";secondary="KEEP CORE LONG";}
-    else if(price>=entry){action="REDUCE";secondary=score>=2.5?"TAKE PARTIAL PROFIT; KEEP RUNNER":"SECURE RECOVERED CAPITAL";}
-  }
+  const decided=decideAction({direction,price,entry,hedgeNotional,h1Close,h4Close,score,framework:fw});
+  const action=decided.action,secondary=decided.secondaryAction;
   const profitablePath=score>=1.7?"IMPROVING":score<=-1.8?"DETERIORATING":"REALISTIC BUT UNCONFIRMED";
   const confidence=clamp(50+score*7,20,86);
   const recoveryNeed=direction==="long"?pct(entry,price):pct(price,entry);
