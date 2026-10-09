@@ -1,0 +1,7 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {parseRss,stablecoinContext,createContext} from '../market-context.mjs';
+const now=Date.UTC(2026,9,9,12);
+test('headlines require dated safe links and reject future items',()=>{const xml='<item><title>A &amp; B</title><link>https://example.com/a</link><pubDate>Fri, 09 Oct 2026 10:00:00 GMT</pubDate></item><item><title>Bad</title><link>javascript:alert(1)</link><pubDate>Fri, 09 Oct 2026 10:00:00 GMT</pubDate></item><item><title>Future</title><link>https://example.com/b</link><pubDate>Fri, 09 Oct 2026 14:00:00 GMT</pubDate></item>';assert.deepEqual(parseRss(xml,now).map(x=>x.title),['A & B']);});
+test('on-chain context is a fresh global supply measure, not token flows',()=>{const row=(at,usd)=>({date:at/1000,totalCirculatingUSD:{peggedUSD:usd}});const c=stablecoinContext([row(now-8*86400000,100),row(now-86400000,110)],now);assert(Math.abs(c.change7dPct-10)<1e-8);assert.match(c.scope,/not asset-specific/);assert.throws(()=>stablecoinContext([row(now-10*86400000,110)],now),/stale|incomplete/);});
+test('provider failures are visible and hourly refresh is bounded',async()=>{let calls=0;const c=createContext(async()=>{calls++;throw new Error('provider unavailable');},()=>now);await c.refresh();assert.equal(calls,5);assert(c.status().feeds.every(f=>f.available===false));assert.equal(c.status().onchain.available,false);assert.equal(c.status().tokenOnchain.available,false);await c.refresh();assert.equal(calls,5);});
