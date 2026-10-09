@@ -1,54 +1,55 @@
-# Free MTF profile
+# Manual MTF context profile
 
-The opt-in `ENGINE_PROFILE=free_mtf` profile replaces high-frequency row persistence with one bounded atomic checkpoint. The legacy profile and existing history remain intact for reference; legacy raw writers, scanner, retention and calibration jobs never start in this profile. Trading Bot is a separate service and is unchanged.
+`ENGINE_PROFILE=free_mtf` serves manual-entry research only. No exchange account credentials, order submission, paper monitoring, raw tick persistence or legacy calibration jobs start in this profile. The bot and historical records remain separate.
 
-## Storage budget and recovery
+## Scan and strategies
 
-- One complete checkpoint at most every 120 seconds: 720 successful writes/day, enforced at the database boundary as well as in the process. CAS rejects stale revisions, including overlapping deployments. A successful read cannot manufacture a write acknowledgement.
-- Existing D1 `kv_rows` has five indexes. Budget a conservative 11 billed row writes per document replacement: approximately 7,920/day, not 720 billed rows. Failed/conflicting attempts and other services also consume resources; this is not a guarantee of account-wide capacity. Inspect actual D1 metadata/analytics after recovery.
-- Maximum document 1.4 MB; maximum 12 markets, 220 closed candles each H1/H4/D1, 170 signal records. Signals retained 30 days; open paper records retained to resolution. Fixed key means no unbounded row growth or daily delete job. Bound failures block saving and publication.
-- Quotes/books/recent trades and diagnostics stay in memory. Restart loads the last complete checkpoint and re-fetches market history. Paper cursor and daily signal ledger are checkpointed together. A failed recovery never starts a new empty ledger.
-- Engine-only checkpoint Worker uses a fixed namespace/key, the existing D1 database, and the existing engine token hash. It has no generic table or SQL endpoint. Shared storage and market Workers are unchanged.
-- Quota errors pause writes until 00:00 UTC. Reads and the dashboard remain available. New setups are shown only after persistence acknowledges the complete checkpoint. Existing setups age visibly.
-- `/api/live` is process liveness for rollout; `/api/health` and `/api/ready` return 503 while feeds/persistence are not ready. Do not use rollout success as evidence of storage or strategy readiness.
+Model `mtf_context_closed_v2` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
 
-## Selection contract
+Both strategies require 200+ continuous, current, closed H1/H4/D1 candles; EMA20/50 direction and slope alignment; altcoin alignment with BTC; fresh book/trade/receipt times <=90 seconds; spread <=6 bps; funding absolute rate <=0.05%; and fresh open interest with roughly one-hour change >=-1.5%.
 
-Rule model `mtf_free_closed_v1`, paper review only; no exchange order credentials or execution path.
+- Trend breakout: a directional H1 close outside the prior 20-bar extreme, volume >=1.2 times the prior mean.
+- Trend pullback: the same higher-timeframe trend, a recent touch of H1 EMA20, a directional recovery above/below the previous close and EMA20 within one ATR, and the same volume threshold.
 
-- Liquid Bybit USDT perpetuals, at least $50m 24-hour turnover, up to 12 assets. Open-paper assets retain coverage. No pre-rally small-cap stream.
-- 200+ continuous, current closed candles on every timeframe. Daily and H4 EMA20/50 direction/slope must agree with H1; altcoins must not oppose BTC D1/H4 direction.
-- H1 close breaks the prior 20-bar extreme, directional candle, volume >=1.2x prior mean. Book/trade/receipt timestamps each <=90 seconds, spread <=6 bps. No late chasing: current price within 0.35 H1 ATR of signal close, at most 3 ATR from EMA20.
-- Current funding absolute rate <=0.05% per settlement, fresh OI with approximately one-hour change >=-1.5%. Missing derivatives block qualification. These are transparent filters, not evidence of predictive edge.
-- Structural six-bar stop plus 0.2 ATR buffer; distance 0.4–5%, at least 1.2 ATR. Targets 1R, 2R, 3R; net TP2/stop scenario >=1.6 after modeled fees and slippage. Rule agreement score >=80/100. Score is not a win probability.
-- Maximum five per Dubai day (UTC+4); at most two per review; >=one hour between selected batches; no same-symbol repeat within a day or while its paper record is open. Zero is allowed. Entry reference valid one hour; paper observation horizon 48 hours.
-- The design seeks selectivity; it does not guarantee 3–5 opportunities daily or profitability. It uses market/technical/derivatives history, not unimplemented news, on-chain or fundamental research.
+Structural six-bar stop plus 0.2 ATR buffer; stop distance 0.4–5%, at least 1.2 ATR. Entry rounds toward the adverse fill direction, stop away from entry, targets conservatively toward entry. Recheck rounded risk and net TP2/stop scenario >=1.6 after modeled costs. Score >=80 ranks technical agreement and is never a win probability. TP1/TP2/TP3 approximate 1R/2R/3R after rounding.
 
-## P&L and evidence
+At most four per Dubai day, two per batch, one hour between batches, and one signal per asset/day. The entry window is at most one hour and is shortened before an upcoming event blackout. A stale feed, failed checkpoint, missing context, expired window or price outside the narrow entry zone prevents actionable status. Observed price reaching stop or TP1 cancels the entry and is not a tracked trade outcome. Intracycle excursions may be missed; users must independently check the current market and their own fills.
 
-Dashboard scenario notional defaults to $1,000 and is editable. Each stop/target is a separate full-position exit, not a scale-out policy. Fees 0.055% per side and slippage 0.015% per side; funding excluded because future settlements are unknown. Statistical expected P&L and win probability remain null.
+## Context gates and source coverage
 
-Paper monitor uses closed one-minute candles, stop-first when stop and TP3 occur in the same candle, adverse open fill for a gap through stop, and invalidates missing paths or ambiguous entry-minute hits. Only terminal stop/TP3/timeout closes a record; TP1/TP2 are scenario levels. These are modeled observations, not actual fills, and funding-incomplete outcomes must not be advertised as validated performance. No automatic promotion into the old production gate.
+Context refreshes hourly; partial provider failures permit retries no more often than every 15 minutes. Fixed public URLs, source attribution and dated snapshots are used; no LLM tokens, paid APIs or additional D1 context rows are required.
 
-Final strategy signoff requires sufficient out-of-sample/forward observations, historical funding attribution, conservative full costs, and verified positive robustness across regimes. A software release cannot supply that evidence on day one.
+Official BLS and BEA ICS calendars and the Fed FOMC meeting calendar supply upcoming release dates. Eastern daylight saving time is converted to UTC and displayed in Dubai time. Major releases block new entries one hour before through 30 minutes after. FOMC calendar dates are official, but customary 14:00 ET release time is labelled an assumption; both meeting days are blocked. All three calendar sources must parse successfully. Consensus forecasts, comprehensive Fed speeches and every geopolitical event are not covered.
 
-## Release and rollback
+Fed/BLS releases, relevant BBC business/macro headlines and CoinDesk headlines provide news evidence. Crypto and macro news must be current. Relevant hack, exploit, insolvency, bankruptcy, halted withdrawal and delisting headlines veto automatic qualification for manual review. This is a conservative headline rule, not semantic news analysis or directional sentiment forecasting; false positives and missed events remain possible. News never increases the technical score.
 
-Set only on main engine service:
+Coin Metrics Community catalog is checked before requesting daily metrics. Public exchange deposits and withdrawals currently cover BTC and ETH. Other verified tokens may have active-address counts, but activity never substitutes for missing exchange flows. All 30 markets remain scanned; a token without fresh verified exchange flows cannot produce a final signal. Current coverage plus one-asset-per-day policy means at most two fully covered assets can signal daily; the cap of four does not promise four opportunities.
 
-```
-ENGINE_PROFILE=free_mtf
-FREE_MARKET_RELAY_URL=https://crypto-engine-free-market.asyoulikeit2000.workers.dev
-FREE_D1_RELAY_URL=https://crypto-engine-free-checkpoint.asyoulikeit2000.workers.dev
-```
+Daily periods must be closed, fresh within 36 hours of period end, and have eight continuous observations. Strong net inflow ratio >20% vetoes longs; net outflow ratio below -20% vetoes shorts. An active-address drop >40% against the previous seven-day mean vetoes either direction when the activity comparison is available. Provider-labelled exchange addresses are incomplete and data may be provisional/revised. These are not live whale observations or proof of selling/buying intent.
 
-Keep existing `CLOUDFLARE_D1_RELAY_TOKEN`. Market Worker Singapore placement, no R2 binding; checkpoint Worker D1 `DB` and `ENGINE_TOKEN_HASH` bindings. Railway one replica, manual release watch pattern, start `node server.mjs`, liveness path `/api/live`. Both Workers have source in this repository. Do not change the bot service.
+DefiLlama global USD stablecoin supply adds broad liquidity context. Weekly contraction greater than 1% vetoes longs. Global supply is not a token exchange-flow measure. Signal receipts preserve context timestamps, flow evidence, relevant headlines and upcoming events inside the compact ledger. Context must be fresh and all mandatory risk checks pass before publication.
 
-Rollback should keep Free persistence and select a prior Free release. Returning to the legacy profile re-enables quota-heavy writers and is not a safe Free-tier rollback. Old research records were not deleted or imported as validated outcomes into the new model.
+## Storage and deployment
 
-## References
+One atomic checkpoint at most every 120 seconds, at most 720 saves/day. The fixed key retains a seven-day signal ledger for up to 30 symbols; candle histories remain in memory and rehydrate after restart. Document cap 1.4 MB and 170 records; typical empty ledger is under 1 KB. Failed recovery never creates a fresh empty ledger. CAS, server throttle, lost-row guards and successful acknowledgement remain mandatory.
 
-- D1 pricing and indexed rows: https://developers.cloudflare.com/d1/platform/pricing/
-- D1 limits: https://developers.cloudflare.com/d1/platform/limits/
-- Bybit candles (unclosed closePrice is latest trade): https://bybit-exchange.github.io/docs/v5/market/kline
-- Bybit funding history: https://bybit-exchange.github.io/docs/v5/market/history-fund-rate
+The dedicated checkpoint Worker binds to `crypto-engine-manual-checkpoint`, isolated from the full legacy `crypto-shadow-research` database. Its only endpoint is the fixed checkpoint namespace; `ENGINE_TOKEN_HASH` authentication remains required. No generic SQL/table endpoint. The dashboard conservatively estimates 7,920 indexed row writes/day; actual dedicated schema metadata can be lower. Other services still share account quotas; estimates are not account capacity guarantees.
+
+Railway uses one replica, start `node server.mjs`, manual release watch pattern, and `/api/live` liveness. `/api/ready` and `/api/health` distinguish feed/persistence readiness from liveness. Individual context failures still block final qualification and actionable API/UI state. Market Worker retains Singapore placement. Keep existing token bindings; do not expose or rotate secrets.
+
+## Research limitations
+
+Exact USDT prices are limit references, not guaranteed fills. Fees 0.055% and slippage 0.015% per side are assumptions. P&L scenarios are separate full-position exits before funding, with no leverage. Win probability and expected profit remain unavailable. Strategies and context veto thresholds are unvalidated; a software release does not supply out-of-sample or forward evidence.
+
+Rollback to a prior Free/manual release only; legacy writers consume excessive resources. Historical rows are preserved. No automatic promotion to live order execution.
+
+## Sources
+
+- https://docs.coinmetrics.io/api/v4/
+- https://docs.coinmetrics.io/network-data/network-data-overview/exchange/deposits
+- https://docs.coinmetrics.io/network-data/network-data-overview/exchange/withdrawals
+- https://www.bls.gov/help/hlpiCAL.htm
+- https://www.bea.gov/news/schedule/icalendar
+- https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+- https://bybit-exchange.github.io/docs/v5/market/instrument
+- https://developers.cloudflare.com/d1/platform/pricing/
