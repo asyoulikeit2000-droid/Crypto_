@@ -14,7 +14,7 @@ export default {async fetch(request,env) {
     if(request.method!=='POST')return Response.json({ok:false,error:'method_not_allowed'},{status:405});
     const raw=await request.text();if(new TextEncoder().encode(raw).length>MAX_BYTES+1000)return Response.json({ok:false,error:'document_too_large'},{status:413});
     const body=JSON.parse(raw),data=body.data,expected=body.expectedSavedAt,now=Date.now();
-    if(!data||data.version!==1||!Array.isArray(data.signals)||data.signals.length>170||!Array.isArray(data.symbols)||data.symbols.length>12||!data.histories||!Number.isSafeInteger(expected)||expected<0)return Response.json({ok:false,error:'invalid_checkpoint'},{status:400});
+    if(!data||data.version!==1||!Array.isArray(data.signals)||data.signals.length>170||!Array.isArray(data.symbols)||data.symbols.length>30||!data.histories||!Number.isSafeInteger(expected)||expected<0)return Response.json({ok:false,error:'invalid_checkpoint'},{status:400});
     data.savedAt=now;
     const payload=JSON.stringify({id:KEY,data});
     if(new TextEncoder().encode(payload).length>MAX_BYTES)return Response.json({ok:false,error:'document_too_large'},{status:413});
