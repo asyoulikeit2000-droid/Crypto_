@@ -5,7 +5,7 @@ const KEY = 'mtf_v1';
 
 export function validateCheckpoint(value) {
   if (!value || value.version !== 1 || !Array.isArray(value.signals) || !value.histories || !Array.isArray(value.symbols) || !Number.isFinite(value.savedAt)) throw new Error('Invalid Free checkpoint; refusing overwrite');
-  if (value.signals.length > 170 || value.symbols.length > 12) throw new Error('Checkpoint bounds exceeded');
+  if (value.signals.length > 170 || value.symbols.length > 30) throw new Error('Checkpoint bounds exceeded');
   if (Buffer.byteLength(JSON.stringify(value)) > MAX_CHECKPOINT_BYTES) throw new Error('Checkpoint exceeds safe D1 document size');
   return value;
 }
