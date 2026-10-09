@@ -1,6 +1,6 @@
 export const MODEL = 'mtf_free_closed_v1';
 export const INTERVALS = {H1: 3_600_000, H4: 14_400_000, D1: 86_400_000};
-export const DAILY_CAP = 5;
+export const DAILY_CAP = 4;
 export const FEE_RATE = 0.00055;
 export const SLIPPAGE_RATE = 0.00015;
 const finite = v => v !== null && v !== '' && Number.isFinite(Number(v));
@@ -61,14 +61,14 @@ export function evaluateMtf(symbol, history, market, btcHistory, now) {
   if(pnl.targets[1].netBeforeFundingUsd / Math.abs(pnl.stop.netBeforeFundingUsd)<1.6) return reject('Net reward/risk too low');
   const score=Math.min(100,75+Math.min(10,(volumeRatio-1.2)*10)+Math.min(8,Math.abs(h4.fast-h4.slow)/h4.atr*3)+Math.min(7,Math.max(0,market.oiChange)*100));
   if(score<80) return reject('Quality score below 80/100');
-  return {eligible:true,symbol,model:MODEL,direction,score:Math.round(score),entry:price,entryZone:[price-a*.15,price+a*.15],stop,targets,riskPct,pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:'D1/H4 trend + H1 breakout + volume + liquidity + derivatives',analysis:{d1:side===1?'UP':'DOWN',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'FORWARD_PAPER_ONLY'};
+  return {eligible:true,symbol,model:MODEL,direction,score:Math.round(score),entry:price,entryZone:[price-a*.15,price+a*.15],stop,targets,riskPct,pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:'D1/H4 trend + H1 breakout + volume + liquidity + derivatives',analysis:{d1:side===1?'UP':'DOWN',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
 }
 export function selectSetups(candidates, signals, now) {
   const today=signals.filter(s=>reviewDay(s.createdAt)===reviewDay(now));
-  const blocked=new Set([...today,...signals.filter(s=>s.status==='OPEN')].map(s=>s.symbol));
+  const blocked=new Set([...today,...signals.filter(s=>s.entryValidUntil>now)].map(s=>s.symbol));
   const recent=signals.some(s=>now-s.createdAt<3_600_000);
   if(recent) return [];
-  return candidates.filter(c=>c.eligible&&!blocked.has(c.symbol)).sort((a,b)=>b.score-a.score || a.symbol.localeCompare(b.symbol)).slice(0,Math.max(0,Math.min(2,DAILY_CAP-today.length))).map(c=>({...c,id:`${MODEL}:${c.symbol}:${c.candleAt}:${c.direction}`,createdAt:now,status:'OPEN',paperCursor:Math.floor(now/60_000)*60_000,day:reviewDay(now)}));
+  return candidates.filter(c=>c.eligible&&!blocked.has(c.symbol)).sort((a,b)=>b.score-a.score || a.symbol.localeCompare(b.symbol)).slice(0,Math.max(0,Math.min(2,DAILY_CAP-today.length))).map(c=>({...c,id:`${MODEL}:${c.symbol}:${c.candleAt}:${c.direction}`,createdAt:now,status:'OPEN',day:reviewDay(now)}));
 }
 // Conservative candle model: partial entry candle cannot establish intrabar order.
 // Any gap/ambiguous entry invalidates evidence; never counted as a win.
