@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createFreeCheckpoint,MAX_CHECKPOINT_BYTES} from '../storage/free-checkpoint.mjs';
-import {closedCandles,candleCoverage,freshness,evaluateMtf,selectSetups,reviewDay,scenarios,advancePaper,INTERVALS,exactLevels,entryState,invalidateEntry} from '../mtf-strategy.mjs';
+import {rsi,closedCandles,candleCoverage,freshness,evaluateMtf,selectSetups,reviewDay,scenarios,advancePaper,INTERVALS,exactLevels,entryState,invalidateEntry} from '../mtf-strategy.mjs';
 const now=Date.UTC(2026,9,4,12,2);
 const empty=()=>({version:1,savedAt:0,symbols:[],histories:{},signals:[]});
 function bars(tf,side=1){const ms=INTERVALS[tf],end=Math.floor(now/ms)*ms;return Array.from({length:220},(_,i)=>{const p=side===1?100+i*.1:150-i*.1;return [end-(220-i)*ms,p,p+.2,p-.2,p+side*.08,100,12000];});}
@@ -53,4 +53,9 @@ test('observed stop or TP1 cancels entry irreversibly without claiming a paper o
  const s={status:'OPEN',direction:'LONG',stop:98,targets:[102,104,106]},m={price:102,bookAt:now,tradeAt:now,receivedAt:now};
  const cancelled=invalidateEntry(s,m,now);assert.equal(cancelled.status,'INVALIDATED');assert.match(cancelled.invalidationReason,/not a tracked/);assert.equal(invalidateEntry(cancelled,{...m,price:100},now+1000).status,'INVALIDATED');
  assert.equal(invalidateEntry(s,{...m,price:98},now).status,'INVALIDATED');assert.equal(invalidateEntry(s,{...m,bookAt:now-91000},now).status,'OPEN');
+});
+
+test('Wilder RSI reports bounded supporting evidence and does not manufacture trend signals',()=>{
+ assert.equal(rsi(Array.from({length:30},(_,i)=>100+i)),100);assert.equal(rsi(Array.from({length:30},(_,i)=>100-i)),0);assert.equal(rsi(Array(30).fill(100)),50);assert.equal(rsi([100]),null);assert.equal(rsi([100,NaN]),null);
+ const {history,market}=setup();const r=evaluateMtf('BTCUSDT',history,market,history,now);assert(r.eligible);assert(r.analysis.indicators.H1.ema20>r.analysis.indicators.H1.ema50);assert(r.analysis.indicators.H1.rsi14>=0&&r.analysis.indicators.H1.rsi14<=100);assert(r.analysis.netRewardRisk>=1.6);
 });

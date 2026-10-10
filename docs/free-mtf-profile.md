@@ -4,7 +4,7 @@
 
 ## Scan and strategies
 
-Model `mtf_context_closed_v2` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
+Model `mtf_free_tiers_v3` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
 
 Both strategies require 200+ continuous, current, closed H1/H4/D1 candles; EMA20/50 direction and slope alignment; altcoin alignment with BTC; fresh book/trade/receipt times <=90 seconds; spread <=6 bps; funding absolute rate <=0.05%; and fresh open interest with roughly one-hour change >=-1.5%.
 
@@ -23,11 +23,19 @@ Official BLS and BEA ICS calendars and the Fed FOMC meeting calendar supply upco
 
 Fed/BLS releases, relevant BBC business/macro headlines and CoinDesk headlines provide news evidence. Crypto and macro news must be current. Relevant hack, exploit, insolvency, bankruptcy, halted withdrawal and delisting headlines veto automatic qualification for manual review. This is a conservative headline rule, not semantic news analysis or directional sentiment forecasting; false positives and missed events remain possible. News never increases the technical score.
 
-Coin Metrics Community catalog is checked before requesting daily metrics. Public exchange deposits and withdrawals currently cover BTC and ETH. Other verified tokens may have active-address counts, but activity never substitutes for missing exchange flows. All 30 markets remain scanned; a token without fresh verified exchange flows cannot produce a final signal. Current coverage plus one-asset-per-day policy means at most two fully covered assets can signal daily; the cap of four does not promise four opportunities.
+Coin Metrics Community catalog is checked before requesting daily metrics. Public exchange deposits and withdrawals currently cover BTC and ETH. Other verified tokens may have active-address counts, but activity never substitutes for missing exchange flows. Up to 30 markets remain scanned. FLOW_CONFIRMED signals require verified current token exchange flows. TECHNICAL_CONTEXT signals may qualify without those flows and explicitly disclose their absence. Both tiers retain all strategy, market, news, calendar, global-supply and cross-venue requirements. Missing flow data never counts as positive evidence, increases the score, or gets labelled verified. Reported flow data that is stale, malformed or adverse blocks qualification; existing flow-confirmed signals cannot silently downgrade into technical entries. The four-per-day cap applies jointly across both tiers and does not promise any daily minimum.
 
 Daily periods must be closed, fresh within 36 hours of period end, and have eight continuous observations. Strong net inflow ratio >20% vetoes longs; net outflow ratio below -20% vetoes shorts. An active-address drop >40% against the previous seven-day mean vetoes either direction when the activity comparison is available. Provider-labelled exchange addresses are incomplete and data may be provisional/revised. These are not live whale observations or proof of selling/buying intent.
 
-DefiLlama global USD stablecoin supply adds broad liquidity context. Weekly contraction greater than 1% vetoes longs. Global supply is not a token exchange-flow measure. Signal receipts preserve context timestamps, flow evidence, relevant headlines and upcoming events inside the compact ledger. Context must be fresh and all mandatory risk checks pass before publication.
+DefiLlama global USD stablecoin supply adds broad liquidity context. Weekly contraction greater than 1% vetoes longs. Global supply is not a token exchange-flow measure. Signal receipts preserve context timestamps, flow evidence, relevant headlines and upcoming events inside the compact ledger. Context must be fresh and all mandatory risk checks pass before publication. Daily provider-labelled flows remain incomplete and revisable even in the FLOW_CONFIRMED tier.
+
+## Public price corroboration and indicator receipts
+
+OKX public USDT perpetual tickers are fetched once per minute (at most 1,440 attempted bulk requests/day), directly from Railway and without credentials. Exact token symbols only; multiplier contracts and token aliases are never guessed. Price evidence must be <=90 seconds old and within 0.5% of the Bybit reference, or new publication and entry availability are blocked. Source failures clear availability and do not reuse stale data as current. This is corroboration, not a guarantee of fills or equivalent contract rules. The Binance public API returned a location restriction from this server; no alternate path or bypass is used.
+
+All current closed-candle snapshots expose EMA20/50, Wilder RSI14 and 14-period simple-average true range (ATR) for H1/H4/D1. RSI is supporting context, not a new gate or independent confirmation. Qualified signal receipts include volatility, volume ratio, structural stop, modeled net TP2/SL reward/risk, coverage tier, public-context timestamps and the OKX price observed at publication. Current venue evidence is checked again before entry availability. Prices and tick sizes remain Bybit references; independently check your actual OKX/Binance contract, fees and fills.
+
+No subscriptions, paid APIs or LLM requests are added. No complete worldwide-news, whale-flow, daily-signal or profitable-trading guarantee is made. Push notifications remain unconfigured.
 
 ## Storage and deployment
 
@@ -35,7 +43,7 @@ One atomic checkpoint at most every 120 seconds, at most 720 saves/day. The fixe
 
 The dedicated checkpoint Worker binds to `crypto-engine-manual-checkpoint`, isolated from the full legacy `crypto-shadow-research` database. Its only endpoint is the fixed checkpoint namespace; `ENGINE_TOKEN_HASH` authentication remains required. No generic SQL/table endpoint. The dashboard conservatively estimates 7,920 indexed row writes/day; actual dedicated schema metadata can be lower. Other services still share account quotas; estimates are not account capacity guarantees.
 
-Railway uses one replica, start `node server.mjs`, manual release watch pattern, and `/api/live` liveness. `/api/ready` and `/api/health` distinguish feed/persistence readiness from liveness. Individual context failures still block final qualification and actionable API/UI state. Market Worker retains Singapore placement. Keep existing token bindings; do not expose or rotate secrets.
+Railway uses one replica, start `node server.mjs`, manual release watch pattern, and `/api/live` liveness. `/api/ready` and `/api/health` distinguish feed/persistence readiness from liveness. Individual required-context failures still block qualification and actionable API/UI state; optional flow coverage is always labelled by tier. Market Worker retains Singapore placement. Keep existing token bindings; do not expose or rotate secrets.
 
 ## Research limitations
 

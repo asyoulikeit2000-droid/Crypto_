@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "check:migration": "node --check storage/turso-store.mjs && node --check storage/d1-store.mjs && node --check storage/retention.mjs && node --check server.mjs && node --check cloudflare/market-relay.js && node --check free-engine.mjs && node --check mtf-strategy.mjs && node --check storage/free-checkpoint.mjs && node --check storage/free-transport.mjs && node --check cloudflare/free-checkpoint-relay.mjs && node --check cloudflare/free-market-relay.mjs && node --check public/free-app.js"
+    "check:migration": "node --check storage/turso-store.mjs && node --check storage/d1-store.mjs && node --check storage/retention.mjs && node --check server.mjs && node --check cloudflare/market-relay.js && node --check free-engine.mjs && node --check mtf-strategy.mjs && node --check free-venue-context.mjs && node --check storage/free-checkpoint.mjs && node --check storage/free-transport.mjs && node --check cloudflare/free-checkpoint-relay.mjs && node --check cloudflare/free-market-relay.mjs && node --check public/free-app.js"
   },
   "dependencies": {
     "@libsql/client": "^0.15.15"

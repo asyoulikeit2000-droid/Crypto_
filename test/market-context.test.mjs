@@ -57,3 +57,14 @@ test('important malformed timestamps and calendars without major future events f
  assert.throws(()=>parseCalendar(ics().replace('DTSTART;TZID=US-Eastern:20261020T083000','DTSTART;VALUE=DATE:20261020'),'BLS','https://example.com',now),/Unrecognized/);
  assert.throws(()=>parseCalendar(ics().replace('Consumer Price Index','Minor survey'),'BLS','https://example.com',now),/future coverage/);
 });
+
+test('explicit technical tier permits unavailable flows without relabelling them as verified',()=>{
+ const v=valid();delete v.tokenOnchain.assets.BTCUSDT;
+ assert.equal(contextGate(candidate,v,now).eligible,false);
+ const r=contextGate(candidate,v,now,{allowTechnicalSignals:true});assert(r.eligible);assert.equal(r.coverageTier,'TECHNICAL_CONTEXT');assert.equal(r.context.flow,null);assert.equal(r.context.flowStatus,'UNAVAILABLE');assert.equal(r.score,candidate.score);assert.match(r.reason,/technical tier only/);
+ const full=contextGate(candidate,valid(),now,{allowTechnicalSignals:true});assert(full.eligible);assert.equal(full.coverageTier,'FLOW_CONFIRMED');
+});
+test('technical tier never bypasses adverse or stale reported flows, news, calendars or liquidity',()=>{
+ for(const change of [v=>{v.tokenOnchain.assets.BTCUSDT.periodEnd=now-40*HOUR;},v=>{v.tokenOnchain.assets.BTCUSDT.netFlowRatio=.3;},v=>{v.economicCalendar.available=false;},v=>{v.feeds[0].available=false;},v=>{v.onchain.available=false;}]){const v=valid();change(v);assert.equal(contextGate(candidate,v,now,{allowTechnicalSignals:true}).eligible,false);}
+ const v=valid();delete v.tokenOnchain.assets.BTCUSDT;v.economicCalendar.events[0].at=now;assert.match(contextGate(candidate,v,now,{allowTechnicalSignals:true}).reason,/blackout/);
+});

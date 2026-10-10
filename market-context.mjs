@@ -63,7 +63,7 @@ export function tokenEvidence(rows,asset,now=Date.now()) {
  const flowAvailable=continuous&&data.slice(-8).every(x=>x.inflowUsd!==null&&x.outflowUsd!==null&&x.inflowUsd>=0&&x.outflowUsd>=0)&&last.inflowUsd+last.outflowUsd>0;
  return {available:true,flowAvailable,asset,source:'Coin Metrics Community',url:'https://docs.coinmetrics.io/network-data/network-data-overview/exchange/deposits',periodStart:last.at,periodEnd:last.at+DAY,inflowUsd:flowAvailable?last.inflowUsd:null,outflowUsd:flowAvailable?last.outflowUsd:null,netInflowUsd:flowAvailable?last.inflowUsd-last.outflowUsd:null,netFlowRatio:flowAvailable?(last.inflowUsd-last.outflowUsd)/(last.inflowUsd+last.outflowUsd):null,activeAddresses:last.activeAddresses,activityChangePct:continuous&&activityMean>0&&activityPrior.length===7&&last.activeAddresses!==null?(last.activeAddresses/activityMean-1)*100:null,provisional:last.provisional,reason:flowAvailable?null:'Verified exchange-flow coverage unavailable; network activity is not a substitute',scope:'Daily provider-labelled exchange flows, excluding exchange-to-exchange activity; revisable, not live whale tracking'};
 }
-export function contextGate(candidate,value,now=Date.now()) {
+export function contextGate(candidate,value,now=Date.now(),{allowTechnicalSignals=false}={}) {
  const reject=reason=>({...candidate,eligible:false,technicalEligible:!!candidate.eligible,reason});
  if(!candidate.eligible)return candidate;
  if(!value?.updatedAt||now-value.updatedAt>2*HOUR||value.updatedAt>now+60000)return reject('Context loading or stale');
@@ -76,25 +76,27 @@ export function contextGate(candidate,value,now=Date.now()) {
  const flags=news.filter(x=>/\b(?:hack(?:ed)?|exploit(?:ed)?|insolven\w*|bankrupt\w*|withdrawals? (?:halted|suspended)|delist\w*)\b/i.test(x.title));
  if(flags.length)return reject('Headline risk requires manual review: '+flags[0].title);
  const token=value.tokenOnchain?.assets?.[candidate.symbol];
- if(!token?.flowAvailable||![token.periodEnd,token.netFlowRatio].every(Number.isFinite)||Math.abs(token.netFlowRatio)>1||now-token.periodEnd>36*HOUR||token.periodEnd>now)return reject('Verified token-specific exchange flows unavailable or stale');
+ const hasFlow=!!token?.flowAvailable;
+ if(hasFlow&&(![token.periodEnd,token.netFlowRatio].every(Number.isFinite)||Math.abs(token.netFlowRatio)>1||now-token.periodEnd>36*HOUR||token.periodEnd>now))return reject('Verified token-specific exchange flows unavailable or stale');
+ if(!hasFlow&&!allowTechnicalSignals)return reject('Verified token-specific exchange flows unavailable or stale');
  if(!value.onchain?.available||now-value.onchain.observedAt>2*DAY)return reject('Global stablecoin supply evidence unavailable or stale');
- if(candidate.direction==='LONG'&&token.netFlowRatio>.2)return reject('Exchange net inflow conflicts with long setup');
- if(candidate.direction==='SHORT'&&token.netFlowRatio<-.2)return reject('Exchange net outflow conflicts with short setup');
- if(token.activityChangePct!==null&&token.activityChangePct< -40)return reject('Network activity materially below seven-day baseline');
+ if(candidate.direction==='LONG'&&hasFlow&&token.netFlowRatio>.2)return reject('Exchange net inflow conflicts with long setup');
+ if(candidate.direction==='SHORT'&&hasFlow&&token.netFlowRatio<-.2)return reject('Exchange net outflow conflicts with short setup');
+ if(token?.periodEnd<=now&&now-token.periodEnd<=36*HOUR&&Number.isFinite(token.activityChangePct)&&token.activityChangePct< -40)return reject('Network activity materially below seven-day baseline');
  if(candidate.direction==='LONG'&&value.onchain.change7dPct< -1)return reject('Stablecoin supply contraction risk');
  const upcoming=value.economicCalendar.events.filter(e=>e.highImpact&&e.at>now).slice(0,3),nextBlackout=upcoming.map(e=>e.blackoutStart??e.at-HOUR).filter(t=>t>now);
- return {...candidate,technicalEligible:true,entryValidUntil:Math.min(candidate.entryValidUntil,...nextBlackout),reason:candidate.reason+'; calendar, news and on-chain risk checks passed',context:{policy:'context_risk_v1_unvalidated',checkedAt:now,flow:token,stablecoinChange7dPct:value.onchain.change7dPct,upcoming,headlines:news.slice(0,3),newsMethod:'Headline relevance and risk flags only; no directional sentiment forecast',consensusAvailable:false}};
+ return {...candidate,coverageTier:hasFlow?'FLOW_CONFIRMED':'TECHNICAL_CONTEXT',technicalEligible:true,entryValidUntil:Math.min(candidate.entryValidUntil,...nextBlackout),reason:candidate.reason+'; calendar, news and global-liquidity risk checks passed; '+(hasFlow?'verified exchange flows checked':'token exchange flows unavailable — technical tier only'),context:{policy:'free_context_tiers_v2_unvalidated',checkedAt:now,flow:hasFlow?token:null,flowStatus:hasFlow?'VERIFIED_DAILY':'UNAVAILABLE',coverageNote:hasFlow?'Daily provider-labelled flows; revisable and incomplete address coverage':'Token exchange flows not confirmed; technical and public-context evidence only',stablecoinChange7dPct:value.onchain.change7dPct,upcoming,headlines:news.slice(0,3),newsMethod:'Headline relevance and risk flags only; no directional sentiment forecast',consensusAvailable:false}};
 }
-export function contextReadiness(value,now=Date.now()) {
+export function contextReadiness(value,now=Date.now(),{allowTechnicalSignals=false}={}) {
  const fresh=!!value?.updatedAt&&now-value.updatedAt<=2*HOUR&&value.updatedAt<=now+60000;
  const news=['cryptoNews','globalNews'].every(id=>value?.feeds?.some(f=>f.id===id&&f.available&&f.items.some(x=>now-x.publishedAt<=48*HOUR)));
  const flowSymbols=Object.entries(value?.tokenOnchain?.assets||{}).filter(([_,t])=>t.flowAvailable&&Number.isFinite(t.periodEnd)&&t.periodEnd<=now&&now-t.periodEnd<=36*HOUR).map(([s])=>s);
- return {ok:fresh&&news&&!!value.economicCalendar?.available&&!!value.onchain?.available&&now-value.onchain.observedAt<=2*DAY&&flowSymbols.length>0,flowSymbols,updatedAt:value?.updatedAt||null};
+ return {ok:fresh&&news&&!!value.economicCalendar?.available&&!!value.onchain?.available&&now-value.onchain.observedAt<=2*DAY&&(allowTechnicalSignals||flowSymbols.length>0),technicalSignalsEnabled:allowTechnicalSignals,flowSymbols,updatedAt:value?.updatedAt||null};
 }
 export function createContext(fetcher=fetch,clock=Date.now) {
  const feeds=[['fed','Federal Reserve monetary-policy releases','https://www.federalreserve.gov/feeds/press_monetary.xml'],['usEconomy','US Bureau of Labor Statistics releases','https://www.bls.gov/feed/bls_latest.rss'],['globalNews','BBC macro and business headlines','https://feeds.bbci.co.uk/news/business/rss.xml'],['cryptoNews','CoinDesk headlines','https://www.coindesk.com/arc/outboundfeeds/rss/']];
  const calendarSources=[['BLS','https://www.bls.gov/schedule/news_release/bls.ics'],['BEA','https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics'],['Federal Reserve','https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm']];
- let value={updatedAt:null,feeds:[],onchain:{available:false,reason:'Loading global supply'},tokenOnchain:{available:false,assets:{},flowSymbols:[],reason:'Loading verified daily coverage'},economicCalendar:{available:false,events:[],sources:[],reason:'Loading official schedules'},selectionImpact:'Technical strategy plus mandatory calendar, headline-risk and token exchange-flow gates. Context does not inflate rule scores.'},lastAttempt=0,busy=false,catalog=null,catalogAt=0;
+ let value={updatedAt:null,feeds:[],onchain:{available:false,reason:'Loading global supply'},tokenOnchain:{available:false,assets:{},flowSymbols:[],reason:'Loading verified daily coverage'},economicCalendar:{available:false,events:[],sources:[],reason:'Loading official schedules'},selectionImpact:'Technical strategy plus mandatory calendar, headline-risk and global-liquidity checks. Flow-confirmed signals additionally require verified token exchange flows; technical signals explicitly disclose missing flows. Context does not inflate scores.'},lastAttempt=0,busy=false,catalog=null,catalogAt=0;
  async function get(url){const r=await fetcher(url,{signal:AbortSignal.timeout(12000),headers:{'user-agent':'crypto-engine-research/1.1'}});if(!r.ok)throw Error('HTTP '+r.status);return r;}
  return {status:()=>structuredClone(value),async refresh(symbols=Object.keys(ASSETS)){
   if(busy||lastAttempt&&clock()-lastAttempt<(value.feeds.some(f=>!f.available)||!value.economicCalendar.available||!value.tokenOnchain.available?900000:HOUR))return;busy=true;lastAttempt=clock();
@@ -110,7 +112,7 @@ export function createContext(fetcher=fetch,clock=Date.now) {
     const start=new Date(clock()-10*DAY).toISOString().slice(0,10),rows=[];
     for(const [assets,metrics] of [[flows,'FlowInExUSD,FlowOutExUSD,AdrActCnt'],[activity,'AdrActCnt']]){if(!assets.length)continue;const url=CM+'/timeseries/asset-metrics?'+new URLSearchParams({assets:assets.map(x=>x[1]).join(','),metrics,frequency:'1d',start_time:start,page_size:'1000'});const j=await(await get(url)).json();if(!Array.isArray(j.data)||j.next_page_token)throw Error('Incomplete token timeseries');rows.push(...j.data);}
     const assets=Object.fromEntries(symbols.map(s=>[s,ASSETS[s]?tokenEvidence(rows,ASSETS[s],clock()):{available:false,flowAvailable:false,reason:'No verified provider mapping or public coverage'}]));
-    return {available:Object.values(assets).some(x=>x.available),assets,flowSymbols:Object.keys(assets).filter(s=>assets[s].flowAvailable),reason:'Public exchange-flow coverage is limited; missing token flows block final signals. Activity alone is not exchange flow.'};
+    return {available:Object.values(assets).some(x=>x.available),assets,flowSymbols:Object.keys(assets).filter(s=>assets[s].flowAvailable),reason:'Public exchange-flow coverage is limited to supported tokens. Missing flows prevent flow-confirmed signals; separately labelled technical signals can still qualify. Activity is not exchange flow.'};
    }catch(e){return {available:false,assets:{},flowSymbols:[],reason:e.message};}})();
    const [f,c,onchain,tokenOnchain]=await Promise.all([feedTask,calendarTask,supplyTask,tokenTask]);
    const sources=c.map((r,i)=>r.status==='fulfilled'?{source:r.value.source,url:r.value.url,available:true}:{source:calendarSources[i][0],url:calendarSources[i][1],available:false,reason:r.reason.message});
