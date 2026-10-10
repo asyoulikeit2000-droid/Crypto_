@@ -1,4 +1,4 @@
-export const MODEL = 'mtf_context_closed_v2';
+export const MODEL = 'mtf_free_tiers_v3';
 export const INTERVALS = {H1: 3_600_000, H4: 14_400_000, D1: 86_400_000};
 export const DAILY_CAP = 4;
 export const FEE_RATE = 0.00055;
@@ -19,10 +19,23 @@ export function ema(values, period) {
   for(let i=period;i<values.length;i++) v+=(values[i]-v)*2/(period+1);
   return v;
 }
+export function rsi(values,period=14){
+  if(values.length<period+1||!values.every(Number.isFinite))return null;
+  let gain=0,loss=0;
+  for(let i=1;i<=period;i++){const delta=values[i]-values[i-1];gain+=Math.max(0,delta)/period;loss+=Math.max(0,-delta)/period;}
+  for(let i=period+1;i<values.length;i++){const delta=values[i]-values[i-1];gain=(gain*(period-1)+Math.max(0,delta))/period;loss=(loss*(period-1)+Math.max(0,-delta))/period;}
+  return gain===0&&loss===0?50:loss===0?100:100-100/(1+gain/loss);
+}
 function atr(bars) { return mean(bars.slice(-14).map((r,i)=>{const prev=bars[bars.length-14+i-1][4];return Math.max(r[2]-r[3],Math.abs(r[2]-prev),Math.abs(r[3]-prev));})); }
 function trend(bars) {
   const c=bars.map(r=>r[4]), fast=ema(c,20), slow=ema(c,50), prior=ema(c.slice(0,-3),20);
   return {side:c.at(-1)>fast && fast>slow && fast>prior?1:c.at(-1)<fast && fast<slow && fast<prior?-1:0,fast,slow,atr:atr(bars)};
+}
+export function technicalSnapshot(history,now){
+ return Object.fromEntries(Object.keys(INTERVALS).map(tf=>{
+  const bars=history?.[tf];if(!candleCoverage(bars,tf,now))return [tf,{available:false,reason:'Need 200+ continuous, current closed candles'}];
+  const t=trend(bars);return [tf,{available:true,closedAt:bars.at(-1)[0],close:bars.at(-1)[4],trend:t.side===1?'UP':t.side===-1?'DOWN':'NEUTRAL',ema20:t.fast,ema50:t.slow,rsi14:rsi(bars.map(r=>r[4])),atr14:t.atr}];
+ }));
 }
 export function freshness(market, now) {
   const age = t => finite(t) && Number(t)>0 && Number(t)<=now+5000 ? Math.max(0,now-Number(t)) : null;
@@ -44,7 +57,8 @@ export function exactLevels(entry,stop,targets,direction,tickSize) {
   return {entry:e,stop:s,targets:t,tickSize:String(tickSize),riskPct:risk/e};
 }
 export function evaluateMtf(symbol, history, market, btcHistory, now) {
-  const reject=reason=>({symbol,eligible:false,reason});
+  const indicators=technicalSnapshot(history,now);
+  const reject=reason=>({symbol,eligible:false,reason,analysis:{indicators}});
   if(!['H1','H4','D1'].every(tf=>candleCoverage(history?.[tf],tf,now))) return reject('Need 200+ continuous, current closed candles on H1/H4/D1');
   if(!freshness(market,now).fresh) return reject('Market feed stale or unavailable');
   if(!finite(market.price)||market.price<=0||!finite(market.spreadBps)||market.spreadBps<0||market.spreadBps>6||!finite(market.turnover24h)||market.turnover24h<50_000_000) return reject('Liquidity/spread filter');
@@ -76,7 +90,7 @@ export function evaluateMtf(symbol, history, market, btcHistory, now) {
   const score=Math.min(100,75+Math.min(10,(volumeRatio-1.2)*10)+Math.min(8,Math.abs(h4.fast-h4.slow)/h4.atr*3)+Math.min(7,Math.max(0,market.oiChange)*100));
   if(score<80) return reject('Quality score below 80/100');
   const lower=Math.min(exact.stop,targets[0]),upper=Math.max(exact.stop,targets[0]);
-  return {eligible:true,symbol,model:MODEL,strategy,direction,score:Math.round(score),...exact,entryZone:[Math.max(lower,exact.entry-a*.15),Math.min(upper,exact.entry+a*.15)],pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:'D1/H4 trend + H1 '+strategy.toLowerCase().replace('trend_','')+' + volume + liquidity + derivatives',analysis:{d1:side===1?'UP':'DOWN',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
+  return {eligible:true,symbol,model:MODEL,strategy,direction,score:Math.round(score),...exact,entryZone:[Math.max(lower,exact.entry-a*.15),Math.min(upper,exact.entry+a*.15)],pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:'D1/H4 trend + H1 '+strategy.toLowerCase().replace('trend_','')+' + volume + liquidity + derivatives',analysis:{indicators,atrPct:a/price*100,netRewardRisk:pnl.targets[1].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd),triggerLevel:breakout?level:h1.fast,triggerAt:last[0],d1:side===1?'UP':'DOWN',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
 }
 export function entryState(signal,market,now,ready) {
   if(signal.status!=='OPEN')return {actionable:false,reason:signal.invalidationReason||'Archived entry'};
