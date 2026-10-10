@@ -1,3 +1,4 @@
+import {createVenueContext,venueGate} from './free-venue-context.mjs';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {createFreeTransport} from './storage/free-transport.mjs';
@@ -9,6 +10,7 @@ const RELAY=process.env.FREE_MARKET_RELAY_URL;
 if(!RELAY) throw new Error('FREE_MARKET_RELAY_URL is required');
 const store=createFreeCheckpoint(createFreeTransport());
 const context=createContext();
+const venueContext=createVenueContext();
 const historyAttempts=new Map();
 const instruments=new Map();
 const runtime={startedAt:Date.now(),revision:process.env.RAILWAY_GIT_COMMIT_SHA||'local',market:{},errors:[],review:[],lastPoll:null,lastReview:null,lastBook:null,lastTrade:null,recovered:false};
@@ -59,8 +61,9 @@ async function history() {
 }
 function status() {
   const now=Date.now(),p=store.status(),markets=working.symbols.map(s=>({...runtime.market[s],symbol:s,...freshness(runtime.market[s],now)}));
-  const fresh=markets.filter(m=>m.fresh).length,storageOk=p.recovered&&!p.error&&p.lastSuccess>0&&now-p.lastSuccess<300_000,contextHealth=contextReadiness(context.status(),now);
-  return {ok:storageOk&&contextHealth.ok&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:false,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
+  const venue=venueContext.status(),venueOk=venue.available&&venue.fetchedAt<=now+5000&&now-venue.fetchedAt<=90000;
+  const fresh=markets.filter(m=>m.fresh).length,storageOk=p.recovered&&!p.error&&p.lastSuccess>0&&now-p.lastSuccess<300_000,contextHealth=contextReadiness(context.status(),now,{allowTechnicalSignals:true});
+  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:false,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
 }
 async function cycle() {
   if(busy)return;busy=true;
@@ -76,9 +79,10 @@ async function cycle() {
     // Refresh after a slow bootstrap to avoid ranking against an aged book.
     if(Date.now()-beforeHistory>10_000)await snapshot();
     void context.refresh(working.symbols).catch(error);
+    void venueContext.refresh().catch(error);
     const now=Date.now();
-    const currentContext=context.status();
-    runtime.review=working.symbols.map(s=>contextGate(evaluateMtf(s,working.histories[s],runtime.market[s],working.histories.BTCUSDT,now),currentContext,now));
+    const currentContext=context.status(),currentVenue=venueContext.status();
+    runtime.review=working.symbols.map(s=>venueGate(contextGate(evaluateMtf(s,working.histories[s],runtime.market[s],working.histories.BTCUSDT,now),currentContext,now,{allowTechnicalSignals:true}),runtime.market[s],currentVenue,now));
     runtime.lastReview=now;
     working.signals=working.signals.filter(s=>now-s.createdAt<=7*86_400_000).map(s=>invalidateEntry(s,runtime.market[s.symbol],now));
     const candidates=selectSetups(runtime.review,working.signals,now);
@@ -89,7 +93,7 @@ async function cycle() {
   } catch(e){error(e);if(e.conflict)runtime.recovered=false;}finally{busy=false;}
 }
 const routes={'/':'free.html','/free-app.js':'free-app.js','/free.css':'free.css'};
-function displayedSignals(){const h=status(),now=Date.now(),c=context.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=contextGate({...s,eligible:true},c,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
+function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const json=(data,code=200)=>{res.writeHead(code,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data));};
@@ -98,7 +102,7 @@ const server=http.createServer(async(req,res)=>{
   // Explicit liveness is distinct from readiness: a quota-blocked engine remains
   // available to explain its state and recover, without calling itself healthy.
   if(url.pathname==='/api/live')return json({ok:true,profile:'free_mtf',ready:status().ok});
-  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),context:context.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy})=>({symbol,eligible,technicalEligible,reason,score,strategy}))});
+  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis}))});
   if(url.pathname==='/api/signals')return json(displayedSignals());
   if(url.pathname==='/api/paper-trades')return json({enabled:false,reason:'Paper-trade monitoring disabled'});
   if(url.pathname==='/api/market')return json(status().markets);
