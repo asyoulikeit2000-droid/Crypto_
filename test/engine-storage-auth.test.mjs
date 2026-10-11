@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import worker from '../cloudflare/engine-storage-relay.mjs';
+const token='test-only-engine-token';
+const env={ENGINE_TOKEN_HASH:createHash('sha256').update(token).digest('hex'),DB:{prepare(){return {async first(){return {ok:1}},bind(){return {async all(){return {results:[]}}}}}}}};
+const request=(path,auth,method='GET',body)=>new Request('https://example.test'+path,{method,headers:{...(auth?{authorization:auth}:{}),'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+test('rejects missing and wrong credentials',async()=>{for(const auth of [undefined,'Bearer incorrect','Basic incorrect'])assert.equal((await worker.fetch(request('/health',auth),env)).status,401)});
+test('fails closed when hash configuration is absent or malformed',async()=>{for(const h of ['', 'invalid'])assert.equal((await worker.fetch(request('/health','Bearer '+token),{...env,ENGINE_TOKEN_HASH:h})).status,401)});
+test('valid engine token reads health and existing storage',async()=>{assert.equal((await worker.fetch(request('/health','Bearer '+token),env)).status,200);const r=await worker.fetch(request('/kv','Bearer '+token,'POST',{table:'signals',method:'GET',params:{limit:1}}),env);assert.equal(r.status,200);assert.deepEqual(await r.json(),{ok:true,rows:[]})});
+test('does not expose bot trial endpoint',async()=>{assert.equal((await worker.fetch(request('/trials','Bearer '+token),env)).status,404)});
