@@ -5,13 +5,14 @@ import {readFile} from 'node:fs/promises';
 import {scenarios} from '../mtf-strategy.mjs';
 const source=await readFile(new URL('../public/free-app.js',import.meta.url),'utf8'),now=Date.UTC(2026,9,9,12);
 function dashboard(actionable=true,storageAge=0,feedAge=0,configure=()=>{}){
- const elements=Object.fromEntries(['health','notional','signals','markets','details','context','footer','market-cards','market-summary','market-filter','market-dialog','market-title','market-detail','market-close','simulation-metrics','simulation-trades','simulation-note'].map(id=>[id,{innerHTML:'',textContent:'',value:'1000',open:false,handlers:{},addEventListener(type,fn){this.handlers[type]=fn;},querySelectorAll(){return [];},showModal(){this.open=true;},close(){this.open=false;this.handlers.close?.();}}]));
+ const elements=Object.fromEntries(['health','notional','signals','markets','details','context','footer','market-cards','market-summary','market-filter','market-dialog','market-title','market-detail','market-close','simulation-metrics','simulation-trades','simulation-note','detail-dialog','detail-title','detail-body','detail-close','theme-toggle'].map(id=>[id,{innerHTML:'',textContent:'',value:'1000',open:false,handlers:{},addEventListener(type,fn){this.handlers[type]=fn;},setAttribute(name,value){this[name]=value;},querySelectorAll(){return [];},showModal(){this.open=true;},close(){this.open=false;this.handlers.close?.();}}]));
  const s={id:'x',symbol:'BTCUSDT',strategy:'TREND_BREAKOUT',direction:'LONG',score:90,status:'OPEN',createdAt:now,entryValidUntil:now+3600000,entry:100.15,stop:98.05,targets:[102.25,104.35,106.45],entryZone:[100,100.3],riskPct:.02,tickSize:'0.05',pnl:scenarios(100.15,98.05,[102.25,104.35,106.45],'LONG'),analysis:{d1:'UP',h4:'UP',h1:'UP',volumeRatio:2},entryStatus:{actionable,reason:actionable?'Within entry zone':'Outside entry zone; do not chase'},context:{checkedAt:now,flow:{netInflowUsd:10,activeAddresses:1000},newsMethod:'Headline risk checks',headlines:[{title:'<script>bad</script>',url:'https://example.com',publishedAt:now}]}};
  const sample={venueContext:{available:true,fetchedAt:now,markets:{BTCUSDT:{source:'OKX',instrument:'BTC-USDT-SWAP',price:100.15,at:now}}},health:{context:{ok:true},markets:[{symbol:'BTCUSDT',price:100.15,bookAt:now-feedAge,tradeAt:now-feedAge,receivedAt:now-feedAge}],storage:{ok:true,lastSuccess:now-storageAge,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920},feed:{total:1},selectedToday:1,dailyCap:4,revision:'test'},signals:[s],review:[],context:{selectionImpact:'Context gates',onchain:{available:false,reason:'Unavailable'},economicCalendar:{events:[],sources:[],reason:'Schedules loaded'},tokenOnchain:{assets:{BTCUSDT:{flowAvailable:true,inflowUsd:100,outflowUsd:90,netInflowUsd:10,activeAddresses:1000,periodEnd:now}},reason:'Daily provider flows'},feeds:[]}};
  configure(sample);
- const sandbox=vm.createContext({sample,Date:class extends Date{static now(){return now;}},document:{getElementById:id=>elements[id]},fetch:async()=>({ok:true,json:async()=>sample}),setInterval(){},URL,console});
+ const sandbox=vm.createContext({sample,Date:class extends Date{static now(){return now;}},document:{documentElement:{dataset:{theme:'dark'}},getElementById:id=>elements[id]},fetch:async()=>({ok:true,json:async()=>sample}),setInterval(){},URL,console});
  vm.runInContext(source,sandbox);vm.runInContext('data=sample;lastResponse=Date.now();render()',sandbox);
- elements.clickMarket=symbol=>elements['market-cards'].handlers.click({target:{closest:()=>({dataset:{openMarket:symbol}})}});
+ elements.clickDetail=key=>elements.health.handlers.click({target:{closest:()=>({dataset:{detail:key}})}});
+ elements.clickMarket=symbol=>elements['market-cards'].handlers.click({target:{closest:selector=>selector==='a'?null:({dataset:{openMarket:symbol}})}});
  return elements;
 }
 test('final card renders exact entry/SL/three TPs, strategy, context and expiry safely',()=>{const e=dashboard();assert.match(e.signals.innerHTML,/100.15/);assert.match(e.signals.innerHTML,/98.05/);assert.match(e.signals.innerHTML,/102.25/);assert.match(e.signals.innerHTML,/104.35/);assert.match(e.signals.innerHTML,/106.45/);assert.match(e.signals.innerHTML,/SL/);assert.match(e.signals.innerHTML,/TREND_BREAKOUT/);assert.match(e.signals.innerHTML,/Entry review available/);assert.match(e.signals.innerHTML,/Valid until/);assert.match(e.signals.innerHTML,/&lt;script&gt;/);assert.doesNotMatch(e.signals.innerHTML,/<script>bad/);assert.match(e.context.innerHTML,/Upcoming US economic/);});
@@ -49,4 +50,15 @@ test('trade journal labels simulated outcomes and scales PnL without changing si
 });
 test('live simulation PnL becomes unavailable when quote timestamps age',()=>{
  const e=dashboard(false,0,0,sample=>{sample.signals[0].simulation={status:'OPEN',markPrice:101,markPnlUsdt:100,markAt:now-91000,reason:'Recovery pending'};});assert.match(e['simulation-trades'].innerHTML,/Unavailable/);assert.doesNotMatch(e['simulation-trades'].innerHTML,/\+6.67/);
+});
+
+test('summary cards open live details, close and keep simulation caveats explicit',()=>{
+ const e=dashboard(false);assert.match(e.health.innerHTML,/data-detail="health:0"/);assert.match(e['simulation-metrics'].innerHTML,/summary and details/);
+ e.clickDetail('health:0');assert.equal(e['detail-dialog'].open,true);assert.equal(e['detail-title'].textContent,'Market feeds');assert.match(e['detail-body'].innerHTML,/≤90 seconds/);assert.match(e['detail-body'].innerHTML,/BTCUSDT/);
+ e['detail-close'].handlers.click();assert.equal(e['detail-dialog'].open,false);
+ e.clickDetail('performance:0');assert.match(e['detail-body'].innerHTML,/not a forecast/);assert.match(e['detail-body'].innerHTML,/excluded/);
+ e.clickDetail('trade:x');assert.equal(e['detail-title'].textContent,'BTCUSDT · Trade summary');assert.match(e['detail-body'].innerHTML,/HYPOTHETICAL TRADE/);assert.match(e['detail-body'].innerHTML,/100.15/);assert.doesNotMatch(e['detail-body'].innerHTML,/<script>bad/);
+});
+test('theme toggle changes its accessible action and is independent of entry availability',()=>{
+ const e=dashboard(false);assert.equal(e['theme-toggle']['aria-label'],'Switch to light mode');e['theme-toggle'].handlers.click();assert.equal(e['theme-toggle']['aria-label'],'Switch to dark mode');e['theme-toggle'].handlers.click();assert.equal(e['theme-toggle']['aria-label'],'Switch to light mode');assert.doesNotMatch(e.signals.innerHTML,/Entry review available/);
 });
