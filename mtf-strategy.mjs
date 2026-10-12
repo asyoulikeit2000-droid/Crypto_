@@ -1,4 +1,4 @@
-export const MODEL = 'mtf_free_tiers_v3';
+export const MODEL = 'mtf_h4_dual_v4';
 export const INTERVALS = {H1: 3_600_000, H4: 14_400_000, D1: 86_400_000};
 export const DAILY_CAP = 4;
 export const FEE_RATE = 0.00055;
@@ -56,18 +56,20 @@ export function exactLevels(entry,stop,targets,direction,tickSize) {
   if(!(e>0&&s>0&&risk>0)||t.some((x,i)=>x<=0||side*(x-e)<=0||i&&side*(x-t[i-1])<=0))throw Error('Rounded price levels invalid');
   return {entry:e,stop:s,targets:t,tickSize:String(tickSize),riskPct:risk/e};
 }
-export function evaluateMtf(symbol, history, market, btcHistory, now) {
+export function evaluateMtf(symbol, history, market, btcHistory, now, {family='DAILY_ALIGNED'}={}) {
+  const h4Led=family==='H4_LED';
+  if(!['DAILY_ALIGNED','H4_LED'].includes(family))throw Error('Unknown strategy family');
   const indicators=technicalSnapshot(history,now);
-  const reject=reason=>({symbol,eligible:false,reason,analysis:{indicators}});
-  if(!['H1','H4','D1'].every(tf=>candleCoverage(history?.[tf],tf,now))) return reject('Need 200+ continuous, current closed candles on H1/H4/D1');
+  const reject=reason=>({symbol,family,eligible:false,reason,analysis:{indicators}});
+  if(!(h4Led?['H1','H4']:['H1','H4','D1']).every(tf=>candleCoverage(history?.[tf],tf,now))) return reject('Need 200+ continuous, current closed candles on '+(h4Led?'H1/H4':'H1/H4/D1'));
   if(!freshness(market,now).fresh) return reject('Market feed stale or unavailable');
   if(!finite(market.price)||market.price<=0||!finite(market.spreadBps)||market.spreadBps<0||market.spreadBps>6||!finite(market.turnover24h)||market.turnover24h<50_000_000) return reject('Liquidity/spread filter');
   if(!finite(market.fundingRate)||Math.abs(market.fundingRate)>0.0005||!finite(market.oiChange)||market.oiChange<-.015||!market.oiAt||now-market.oiAt>900_000||market.oiAt>now+5000) return reject('Funding or open-interest evidence missing/adverse');
-  const d=trend(history.D1),h4=trend(history.H4),h1=trend(history.H1),side=d.side;
-  if(!side || h4.side!==side || h1.side!==side) return reject('D1/H4/H1 trends disagree');
+  const d=candleCoverage(history?.D1,'D1',now)?trend(history.D1):{side:0},h4=trend(history.H4),h1=trend(history.H1),side=h4Led?h4.side:d.side;
+  if(!side || h4.side!==side || h1.side!==side) return reject(h4Led?'H4/H1 trends disagree':'D1/H4/H1 trends disagree');
   if(symbol!=='BTCUSDT') {
-    if(!candleCoverage(btcHistory?.D1,'D1',now)||!candleCoverage(btcHistory?.H4,'H4',now)) return reject('BTC regime unavailable');
-    if(trend(btcHistory.D1).side===-side || trend(btcHistory.H4).side===-side) return reject('Against BTC regime');
+    if(!candleCoverage(btcHistory?.H4,'H4',now)||!h4Led&&!candleCoverage(btcHistory?.D1,'D1',now)) return reject('BTC regime unavailable');
+    if(!h4Led&&trend(btcHistory.D1).side===-side || trend(btcHistory.H4).side===-side) return reject('Against BTC regime');
   }
   const bars=history.H1,last=bars.at(-1),prior=bars.slice(-21,-1),price=Number(market.price),a=h1.atr;
   const level=side===1?Math.max(...prior.map(r=>r[2])):Math.min(...prior.map(r=>r[3]));
@@ -75,22 +77,24 @@ export function evaluateMtf(symbol, history, market, btcHistory, now) {
   const volumeRatio=last[5]/mean(prior.map(r=>r[5]));
   const previous=bars.at(-2),pullback=side*(last[4]-last[1])>0&&side*(last[4]-previous[4])>0&&Math.abs(last[4]-h1.fast)<=a&&bars.slice(-3).some(r=>r[3]<=h1.fast&&r[2]>=h1.fast)&&side*(last[4]-h1.fast)>0;
   if((!breakout&&!pullback)||volumeRatio<1.2) return reject('No volume-confirmed H1 breakout or trend pullback');
-  const strategy=breakout?'TREND_BREAKOUT':'TREND_PULLBACK';
+  const strategy=(h4Led?'H4_':'')+(breakout?'TREND_BREAKOUT':'TREND_PULLBACK');
   if(Math.abs(price-last[4])>a*.35 || side*(price-h1.fast)>a*3 || breakout&&side*(price-level)<0) return reject('Entry extended or trigger invalidated');
   const structure=side===1?Math.min(...bars.slice(-6).map(r=>r[3])):Math.max(...bars.slice(-6).map(r=>r[2]));
   const stop=structure-side*a*.2,risk=side*(price-stop),riskPct=risk/price;
   if(riskPct<.004 || riskPct>.05 || risk<a*1.2) return reject('Structural stop outside risk bounds');
   const direction=side===1?'LONG':'SHORT';let exact;
-  try{exact=exactLevels(price,stop,[1,2,3].map(r=>price+side*risk*r),direction,market.tickSize);}catch(e){return reject(e.message);}
+  try{exact=exactLevels(price,stop,(h4Led?[1.5,2.5,3.5]:[1,2,3]).map(r=>price+side*risk*r),direction,market.tickSize);}catch(e){return reject(e.message);}
   const targets=exact.targets;
   if(targets.some(t=>t<=0)||stop<=0) return reject('Invalid price levels');
   if(exact.riskPct<.004||exact.riskPct>.05)return reject('Rounded structural stop outside risk bounds');
   const pnl=scenarios(exact.entry,exact.stop,targets,direction);
   if(pnl.targets[1].netBeforeFundingUsd / Math.abs(pnl.stop.netBeforeFundingUsd)<1.6) return reject('Net reward/risk too low');
+  const firstTargetNetRR=pnl.targets[0].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd);
+  if(h4Led&&firstTargetNetRR<1.2)return reject('Net TP1/stop reward-risk below 1.2');
   const score=Math.min(100,75+Math.min(10,(volumeRatio-1.2)*10)+Math.min(8,Math.abs(h4.fast-h4.slow)/h4.atr*3)+Math.min(7,Math.max(0,market.oiChange)*100));
   if(score<80) return reject('Quality score below 80/100');
   const lower=Math.min(exact.stop,targets[0]),upper=Math.max(exact.stop,targets[0]);
-  return {eligible:true,symbol,model:MODEL,strategy,direction,score:Math.round(score),...exact,entryZone:[Math.max(lower,exact.entry-a*.15),Math.min(upper,exact.entry+a*.15)],pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:'D1/H4 trend + H1 '+strategy.toLowerCase().replace('trend_','')+' + volume + liquidity + derivatives',analysis:{indicators,atrPct:a/price*100,netRewardRisk:pnl.targets[1].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd),triggerLevel:breakout?level:h1.fast,triggerAt:last[0],d1:side===1?'UP':'DOWN',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
+  return {eligible:true,symbol,family,primaryTimeframe:h4Led?'H4':'D1',entryTimeframe:'H1',targetR:h4Led?[1.5,2.5,3.5]:[1,2,3],model:MODEL,strategy,direction,score:Math.round(score),...exact,entryZone:[Math.max(lower,exact.entry-a*.15),Math.min(upper,exact.entry+a*.15)],pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:(h4Led?'H4-led trend (D1 context only)':'D1/H4 trend')+' + H1 '+strategy.toLowerCase().replace('trend_','')+' + volume + liquidity + derivatives',analysis:{indicators,firstTargetNetRR,dailyRole:h4Led?'CONTEXT_ONLY':'REQUIRED_ALIGNMENT',atrPct:a/price*100,netRewardRisk:pnl.targets[1].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd),triggerLevel:breakout?level:h1.fast,triggerAt:last[0],d1:indicators.D1.available?indicators.D1.trend:'UNAVAILABLE',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
 }
 export function entryState(signal,market,now,ready) {
   if(signal.status!=='OPEN')return {actionable:false,reason:signal.invalidationReason||'Archived entry'};
