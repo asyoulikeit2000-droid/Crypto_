@@ -62,3 +62,8 @@ test('summary cards open live details, close and keep simulation caveats explici
 test('theme toggle changes its accessible action and is independent of entry availability',()=>{
  const e=dashboard(false);assert.equal(e['theme-toggle']['aria-label'],'Switch to light mode');e['theme-toggle'].handlers.click();assert.equal(e['theme-toggle']['aria-label'],'Switch to dark mode');e['theme-toggle'].handlers.click();assert.equal(e['theme-toggle']['aria-label'],'Switch to light mode');assert.doesNotMatch(e.signals.innerHTML,/Entry review available/);
 });
+
+test('H4 signal labels actual target multiples and daily context; strategy results stay separate',()=>{
+ const e=dashboard(false,0,0,sample=>{const s=sample.signals[0];s.family='H4_LED';s.targetR=[1.5,2.5,3.5];sample.review=[{symbol:s.symbol,eligible:false,reason:'No volume-confirmed trigger',strategyReviews:[{family:'DAILY_ALIGNED',eligible:false,reason:'D1/H4/H1 trends disagree'},{family:'H4_LED',eligible:false,reason:'No volume-confirmed trigger'}]}];sample.strategyPerformance=[{family:'DAILY_ALIGNED',tp:0,stop:1,open:0,winRate:0,netPnlUsdt:-728.27},{family:'H4_LED',tp:0,stop:0,open:0,winRate:null,netPnlUsdt:0}];});
+ assert.match(e.signals.innerHTML,/H4-led · daily context only/);assert.match(e.signals.innerHTML,/TP1 · ~1.5R/);assert.match(e.signals.innerHTML,/TP3 · ~3.5R/);e.clickMarket('BTCUSDT');assert.match(e['market-detail'].innerHTML,/Daily-aligned/);assert.match(e['market-detail'].innerHTML,/H4-led \/ H1 entry/);e.clickDetail('performance:0');assert.match(e['detail-body'].innerHTML,/By strategy family/);assert.match(e['detail-body'].innerHTML,/Daily-aligned/);
+});
