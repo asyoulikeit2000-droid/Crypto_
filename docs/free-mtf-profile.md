@@ -1,6 +1,6 @@
 # Manual MTF context profile
 
-`ENGINE_PROFILE=free_mtf` serves manual-entry research only. No exchange account credentials, order submission, paper monitoring, raw tick persistence or legacy calibration jobs start in this profile. The bot and historical records remain separate.
+`ENGINE_PROFILE=free_mtf` serves manual-entry research only. No exchange account credentials, order submission, raw tick persistence or legacy calibration jobs start in this profile. The bot and historical records remain separate.
 
 ## Scan and strategies
 
@@ -34,6 +34,14 @@ DefiLlama global USD stablecoin supply adds broad liquidity context. Weekly cont
 OKX public USDT perpetual tickers are fetched once per minute (at most 1,440 attempted bulk requests/day), directly from Railway and without credentials. Exact token symbols only; multiplier contracts and token aliases are never guessed. Price evidence must be <=90 seconds old and within 0.5% of the Bybit reference, or new publication and entry availability are blocked. Source failures clear availability and do not reuse stale data as current. This is corroboration, not a guarantee of fills or equivalent contract rules. The Binance public API returned a location restriction from this server; no alternate path or bypass is used.
 
 All current closed-candle snapshots expose EMA20/50, Wilder RSI14 and 14-period simple-average true range (ATR) for H1/H4/D1. RSI is supporting context, not a new gate or independent confirmation. Qualified signal receipts include volatility, volume ratio, structural stop, modeled net TP2/SL reward/risk, coverage tier, public-context timestamps and the OKX price observed at publication. Current venue evidence is checked again before entry availability. Prices and tick sizes remain Bybit references; independently check your actual OKX/Binance contract, fees and fills.
+
+## Hypothetical trade journal
+
+Every published signal is assumed filled immediately at its published entry price, including retained pre-release signals when minute evidence can be recovered. This is a simulation, not a verified fill or trade recommendation. Default position notional is 15,000 USDT, without leverage; the display size control rescales all scenarios and simulation P&L, not stored assumptions or exchange orders. Estimated fees and slippage use the existing 0.055% and 0.015% per side; funding is excluded.
+
+Read-only one-minute Bybit candle pages through the existing market relay recover TP/stop ordering after restarts. Full position closes at TP1, the first of the signal's targets, or stop; TP2/TP3 remain alternative price scenarios, not additional exits after TP1. Stops use adverse gap-open prices; TP1 uses the limit reference. If both levels occur in one minute, the stop is counted first and labelled ambiguous. If the partially elapsed entry minute touches either level, price ordering relative to the assumed fill is unresolved and excluded from win rate. Missing pages/candles never become invented wins or losses; recovery resumes from a persisted cursor. After 48 hours, a continuously evidenced position times out at its last closed minute. Open live marks are provisional estimates and may lag recovered outcomes; stale marks become unavailable.
+
+Simulation win rate is TP1 hits divided by TP1 hits plus stops, including conservative same-minute ties as stops. Open, unresolved and timeout outcomes are excluded from that denominator; timeout P&L remains included in realized simulation P&L. Win rate is not a validated probability or actual account performance. Rows retain seven days; archived TP/stop/timeout/unresolved counts and realized P&L are saved cumulatively in the existing atomic checkpoint. Only acknowledged simulation updates are published. Recovery requests are bounded to two pages per review cycle and at most one attempt per signal per minute; no raw candles are persisted. Exchange account and order endpoints remain disabled.
 
 No subscriptions, paid APIs or LLM requests are added. No complete worldwide-news, whale-flow, daily-signal or profitable-trading guarantee is made. Push notifications remain unconfigured.
 
