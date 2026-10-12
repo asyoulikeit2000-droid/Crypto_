@@ -1,3 +1,4 @@
+import {initSimulation,advanceSimulation,simulationTotals,simulationView} from './simulated-trades.mjs';
 import {createVenueContext,venueGate} from './free-venue-context.mjs';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
@@ -11,7 +12,7 @@ if(!RELAY) throw new Error('FREE_MARKET_RELAY_URL is required');
 const store=createFreeCheckpoint(createFreeTransport());
 const context=createContext();
 const venueContext=createVenueContext();
-const historyAttempts=new Map();
+const historyAttempts=new Map(),simulationAttempts=new Map();
 const instruments=new Map();
 const runtime={startedAt:Date.now(),revision:process.env.RAILWAY_GIT_COMMIT_SHA||'local',market:{},errors:[],review:[],lastPoll:null,lastReview:null,lastBook:null,lastTrade:null,recovered:false};
 let working={version:1,savedAt:0,symbols:[],histories:{},signals:[]},published=null,lastUniverse=0,busy=false;
@@ -28,7 +29,7 @@ async function universe() {
   const valid=new Set(j.info.filter(i=>i.status==='Trading'&&i.quoteCoin==='USDT'&&i.contractType==='LinearPerpetual'&&['','innovation'].includes(i.symbolType||'')&&!/^(USDC|USDE|DAI|TUSD|FDUSD|USDD|BUSD)USDT$/.test(i.symbol)).map(i=>i.symbol));
   const ranked=j.tickers.filter(t=>valid.has(t.symbol)&&Number(t.turnover24h)>=50_000_000).sort((a,b)=>Number(b.turnover24h)-Number(a.turnover24h)).map(t=>t.symbol);
   // Keep open setups covered even when their asset drops out of the liquid universe.
-  const open=working.signals.filter(s=>s.entryValidUntil>Date.now()).map(s=>s.symbol);
+  const open=working.signals.filter(s=>s.entryValidUntil>Date.now()||s.simulation?.status==='OPEN').map(s=>s.symbol);
   working.symbols=[...new Set([...open,...['BTCUSDT','ETHUSDT'].filter(s=>ranked.includes(s)),...ranked])].slice(0,30);
   working.histories=Object.fromEntries(Object.entries(working.histories).filter(([s])=>working.symbols.includes(s)));
   lastUniverse=Date.now();
@@ -59,11 +60,21 @@ async function history() {
     try {const j=await relay('history',[symbol]);working.histories[symbol]=Object.fromEntries(['H1','H4','D1'].map(tf=>[tf,closedCandles(j.histories[tf],tf,now)]));}catch(e){error(e);}
   }
 }
+async function monitorSimulations() {
+  let remaining=2;
+  for(const signal of [...working.signals].sort((a,b)=>(a.simulation?.cursor||a.createdAt)-(b.simulation?.cursor||b.createdAt))){
+    signal.simulation ||= initSimulation(signal);
+    if(signal.simulation.status!=='OPEN'||Date.now()-(simulationAttempts.get(signal.id)||0)<60000)continue;
+    if(!remaining--)break;simulationAttempts.set(signal.id,Date.now());
+    try{const j=await relay('paper',[signal.symbol],{start:signal.simulation.cursor});signal.simulation=advanceSimulation(signal,j.bars,Date.now());}
+    catch{signal.simulation={...signal.simulation,reason:'Minute-candle source unavailable; recovery pending'};}
+  }
+}
 function status() {
   const now=Date.now(),p=store.status(),markets=working.symbols.map(s=>({...runtime.market[s],symbol:s,...freshness(runtime.market[s],now)}));
   const venue=venueContext.status(),venueOk=venue.available&&venue.fetchedAt<=now+5000&&now-venue.fetchedAt<=90000;
   const fresh=markets.filter(m=>m.fresh).length,storageOk=p.recovered&&!p.error&&p.lastSuccess>0&&now-p.lastSuccess<300_000,contextHealth=contextReadiness(context.status(),now,{allowTechnicalSignals:true});
-  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:false,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
+  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:true,simulationEnabled:true,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
 }
 async function cycle() {
   if(busy)return;busy=true;
@@ -78,22 +89,26 @@ async function cycle() {
     await history();
     // Refresh after a slow bootstrap to avoid ranking against an aged book.
     if(Date.now()-beforeHistory>10_000)await snapshot();
+    await monitorSimulations();
     void context.refresh(working.symbols).catch(error);
     void venueContext.refresh().catch(error);
     const now=Date.now();
     const currentContext=context.status(),currentVenue=venueContext.status();
     runtime.review=working.symbols.map(s=>venueGate(contextGate(evaluateMtf(s,working.histories[s],runtime.market[s],working.histories.BTCUSDT,now),currentContext,now,{allowTechnicalSignals:true}),runtime.market[s],currentVenue,now));
     runtime.lastReview=now;
+    const expired=working.signals.filter(s=>now-s.createdAt>7*86_400_000).map(s=>({...s,simulation:s.simulation?.status==='OPEN'?{...s.simulation,status:'UNRESOLVED',reason:'Evidence recovery exceeded seven-day retention'}:s.simulation}));
+    const archived=simulationTotals(expired,working.simulationArchive);
+    working.simulationArchive=Object.fromEntries(['tp','stop','timeout','unresolved','ambiguous','netPnlUsdt'].map(k=>[k,archived[k]]));
     working.signals=working.signals.filter(s=>now-s.createdAt<=7*86_400_000).map(s=>invalidateEntry(s,runtime.market[s.symbol],now));
     const candidates=selectSetups(runtime.review,working.signals,now);
-    const next={...working,signals:[...working.signals,...candidates]};
+    const next={...working,signals:[...working.signals,...candidates.map(s=>({...s,simulation:initSimulation(s)}))]};
     // Selection is visible only after the same checkpoint commits its daily cap.
     const saved=await store.save({...next,histories:{}});
     if(saved){working={...saved,histories:working.histories};published=structuredClone(saved);}
   } catch(e){error(e);if(e.conflict)runtime.recovered=false;}finally{busy=false;}
 }
 const routes={'/':'free.html','/free-app.js':'free-app.js','/free.css':'free.css'};
-function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
+function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,simulation:simulationView(saved,runtime.market[s.symbol],now),entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const json=(data,code=200)=>{res.writeHead(code,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data));};
@@ -102,12 +117,12 @@ const server=http.createServer(async(req,res)=>{
   // Explicit liveness is distinct from readiness: a quota-blocked engine remains
   // available to explain its state and recover, without calling itself healthy.
   if(url.pathname==='/api/live')return json({ok:true,profile:'free_mtf',ready:status().ok});
-  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis}))});
+  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),simulationSummary:simulationTotals(published?.signals||[],published?.simulationArchive),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis}))});
   if(url.pathname==='/api/signals')return json(displayedSignals());
-  if(url.pathname==='/api/paper-trades')return json({enabled:false,reason:'Paper-trade monitoring disabled'});
+  if(url.pathname==='/api/paper-trades')return json({enabled:true,simulated:true,trades:displayedSignals().map(s=>({id:s.id,symbol:s.symbol,direction:s.direction,entry:s.entry,stop:s.stop,targets:s.targets,createdAt:s.createdAt,simulation:s.simulation})),summary:simulationTotals(published?.signals||[],published?.simulationArchive)});
   if(url.pathname==='/api/market')return json(status().markets);
   if(url.pathname==='/api/pre-rally')return json({enabled:false,reason:'Free profile focuses on liquid MTF setups'});
   const file=routes[url.pathname];if(!file)return json({error:'not_found'},404);
   try {res.writeHead(200,{'content-type':file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(await readFile(new URL('./public/'+file,import.meta.url)));}catch{res.end('Unavailable');}
 });
-server.listen(Number(process.env.PORT||3000),process.env.HOST||'0.0.0.0',()=>{console.log('Manual MTF signal server started; paper monitoring and execution disabled');cycle();setInterval(cycle,30_000);});
+server.listen(Number(process.env.PORT||3000),process.env.HOST||'0.0.0.0',()=>{console.log('Manual MTF signal server started; hypothetical monitoring enabled; execution disabled');cycle();setInterval(cycle,30_000);});
