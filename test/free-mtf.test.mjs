@@ -59,3 +59,23 @@ test('Wilder RSI reports bounded supporting evidence and does not manufacture tr
  assert.equal(rsi(Array.from({length:30},(_,i)=>100+i)),100);assert.equal(rsi(Array.from({length:30},(_,i)=>100-i)),0);assert.equal(rsi(Array(30).fill(100)),50);assert.equal(rsi([100]),null);assert.equal(rsi([100,NaN]),null);
  const {history,market}=setup();const r=evaluateMtf('BTCUSDT',history,market,history,now);assert(r.eligible);assert(r.analysis.indicators.H1.ema20>r.analysis.indicators.H1.ema50);assert(r.analysis.indicators.H1.rsi14>=0&&r.analysis.indicators.H1.rsi14<=100);assert(r.analysis.netRewardRisk>=1.6);
 });
+
+test('H4-led long and short require H4/H1 agreement but permit opposing daily context',()=>{
+ for(const side of [1,-1]){const {history,market}=setup(side);history.D1=bars('D1',-side);const original=evaluateMtf('BTCUSDT',history,market,history,now);assert.equal(original.eligible,false);const r=evaluateMtf('BTCUSDT',history,market,history,now,{family:'H4_LED'});assert.equal(r.eligible,true,r.reason);assert.equal(r.direction,side===1?'LONG':'SHORT');assert.equal(r.family,'H4_LED');assert.equal(r.analysis.dailyRole,'CONTEXT_ONLY');assert.equal(r.analysis.d1,side===1?'DOWN':'UP');assert(r.analysis.firstTargetNetRR>=1.2);assert.deepEqual(r.targetR,[1.5,2.5,3.5]);assert.equal(r.probability,null);}
+});
+test('H4-led does not need D1 but missing H4/H1 coverage and stale prices still block',()=>{
+ const {history,market}=setup();const h={...history,D1:[]};assert.equal(evaluateMtf('BTCUSDT',h,market,h,now,{family:'H4_LED'}).eligible,true);
+ for(const broken of [{...h,H4:[]},{...h,H1:[]}])assert.equal(evaluateMtf('BTCUSDT',broken,market,h,now,{family:'H4_LED'}).eligible,false);
+ assert.equal(evaluateMtf('BTCUSDT',h,{...market,bookAt:now-91000},h,now,{family:'H4_LED'}).eligible,false);
+});
+test('H4-led preserves volume, derivatives, liquidity and anti-chasing gates',()=>{
+ const {history,market}=setup();for(const changed of [{...market,fundingRate:.001},{...market,oiChange:-.02},{...market,turnover24h:1e6},{...market,price:market.price*1.05},{...market,tickSize:null}])assert.equal(evaluateMtf('BTCUSDT',history,changed,history,now,{family:'H4_LED'}).eligible,false);
+ history.H1.at(-1)[5]=90;assert.equal(evaluateMtf('BTCUSDT',history,market,history,now,{family:'H4_LED'}).eligible,false);
+});
+test('H4-led rejects opposing BTC H4 but not BTC D1 alone',()=>{
+ const {history,market}=setup(),btc={...history,D1:bars('D1',-1)};assert.equal(evaluateMtf('SOLUSDT',history,market,btc,now,{family:'H4_LED'}).eligible,true);btc.H4=bars('H4',-1);assert.match(evaluateMtf('SOLUSDT',history,market,btc,now,{family:'H4_LED'}).reason,/BTC regime/);
+});
+test('H4-led rejects an unknown family rather than bypassing required alignment',()=>{const {history,market}=setup();assert.throws(()=>evaluateMtf('BTCUSDT',history,market,history,now,{family:'unknown'}),/Unknown/);});
+test('market relay accepts one-letter bases and rejects malformed symbols',async()=>{
+ const {validMarketSymbol}=await import('../cloudflare/free-market-relay.mjs');for(const s of ['SUSDT','WUSDT','BTCUSDT','1000PEPEUSDT'])assert.equal(validMarketSymbol(s),true);for(const s of ['USDT','btcUSDT','BTCUSDT&mode=bootstrap','BTC-USDT','A'.repeat(21)+'USDT'])assert.equal(validMarketSymbol(s),false);
+});

@@ -53,9 +53,9 @@ async function snapshot() {
 }
 async function history() {
   const now=Date.now();let remaining=3;
-  for(const symbol of working.symbols) {
+  for(const symbol of [...working.symbols].sort((a,b)=>(historyAttempts.get(a)||0)-(historyAttempts.get(b)||0))) {
     if(['H1','H4','D1'].every(tf=>candleCoverage(working.histories[symbol]?.[tf],tf,now)))continue;
-    if(Date.now()-(historyAttempts.get(symbol)||0)<300000)continue;
+    if(Date.now()-(historyAttempts.get(symbol)||0)<60000)continue;
     if(!remaining--)break;historyAttempts.set(symbol,Date.now());
     try {const j=await relay('history',[symbol]);working.histories[symbol]=Object.fromEntries(['H1','H4','D1'].map(tf=>[tf,closedCandles(j.histories[tf],tf,now)]));}catch(e){error(e);}
   }
@@ -74,7 +74,7 @@ function status() {
   const now=Date.now(),p=store.status(),markets=working.symbols.map(s=>({...runtime.market[s],symbol:s,...freshness(runtime.market[s],now)}));
   const venue=venueContext.status(),venueOk=venue.available&&venue.fetchedAt<=now+5000&&now-venue.fetchedAt<=90000;
   const fresh=markets.filter(m=>m.fresh).length,storageOk=p.recovered&&!p.error&&p.lastSuccess>0&&now-p.lastSuccess<300_000,contextHealth=contextReadiness(context.status(),now,{allowTechnicalSignals:true});
-  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:true,simulationEnabled:true,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
+  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{strategyFamilies:['DAILY_ALIGNED','H4_LED'],technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:true,simulationEnabled:true,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
 }
 async function cycle() {
   if(busy)return;busy=true;
@@ -94,10 +94,16 @@ async function cycle() {
     void venueContext.refresh().catch(error);
     const now=Date.now();
     const currentContext=context.status(),currentVenue=venueContext.status();
-    runtime.review=working.symbols.map(s=>venueGate(contextGate(evaluateMtf(s,working.histories[s],runtime.market[s],working.histories.BTCUSDT,now),currentContext,now,{allowTechnicalSignals:true}),runtime.market[s],currentVenue,now));
+    runtime.review=working.symbols.map(s=>{
+      const reviews=['DAILY_ALIGNED','H4_LED'].map(family=>venueGate(contextGate(evaluateMtf(s,working.histories[s],runtime.market[s],working.histories.BTCUSDT,now,{family}),currentContext,now,{allowTechnicalSignals:true}),runtime.market[s],currentVenue,now));
+      const chosen=reviews.find(r=>r.eligible)||reviews[1];
+      return {...chosen,strategyReviews:reviews.map(({family,eligible,reason,strategy,direction,score})=>({family,eligible,reason,strategy,direction,score}))};
+    });
     runtime.lastReview=now;
     const expired=working.signals.filter(s=>now-s.createdAt>7*86_400_000).map(s=>({...s,simulation:s.simulation?.status==='OPEN'?{...s.simulation,status:'UNRESOLVED',reason:'Evidence recovery exceeded seven-day retention'}:s.simulation}));
     const archived=simulationTotals(expired,working.simulationArchive);
+    working.simulationFamilyArchive ||= {};
+    for(const family of ['DAILY_ALIGNED','H4_LED']){const total=simulationTotals(expired.filter(s=>(s.family||'DAILY_ALIGNED')===family),working.simulationFamilyArchive[family]);working.simulationFamilyArchive[family]=Object.fromEntries(['tp','stop','timeout','unresolved','ambiguous','netPnlUsdt'].map(k=>[k,total[k]]));}
     working.simulationArchive=Object.fromEntries(['tp','stop','timeout','unresolved','ambiguous','netPnlUsdt'].map(k=>[k,archived[k]]));
     working.signals=working.signals.filter(s=>now-s.createdAt<=7*86_400_000).map(s=>invalidateEntry(s,runtime.market[s.symbol],now));
     const candidates=selectSetups(runtime.review,working.signals,now);
@@ -107,6 +113,7 @@ async function cycle() {
     if(saved){working={...saved,histories:working.histories};published=structuredClone(saved);}
   } catch(e){error(e);if(e.conflict)runtime.recovered=false;}finally{busy=false;}
 }
+function strategyPerformance(){return ['DAILY_ALIGNED','H4_LED'].map(family=>({family,...simulationTotals((published?.signals||[]).filter(s=>(s.family||'DAILY_ALIGNED')===family),published?.simulationFamilyArchive?.[family])}));}
 const routes={'/':'free.html','/free-app.js':'free-app.js','/free.css':'free.css'};
 function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,simulation:simulationView(saved,runtime.market[s.symbol],now),entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
 const server=http.createServer(async(req,res)=>{
@@ -117,7 +124,7 @@ const server=http.createServer(async(req,res)=>{
   // Explicit liveness is distinct from readiness: a quota-blocked engine remains
   // available to explain its state and recover, without calling itself healthy.
   if(url.pathname==='/api/live')return json({ok:true,profile:'free_mtf',ready:status().ok});
-  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),simulationSummary:simulationTotals(published?.signals||[],published?.simulationArchive),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis}))});
+  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),simulationSummary:simulationTotals(published?.signals||[],published?.simulationArchive),strategyPerformance:strategyPerformance(),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis,family,strategyReviews})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis,family,strategyReviews}))});
   if(url.pathname==='/api/signals')return json(displayedSignals());
   if(url.pathname==='/api/paper-trades')return json({enabled:true,simulated:true,trades:displayedSignals().map(s=>({id:s.id,symbol:s.symbol,direction:s.direction,entry:s.entry,stop:s.stop,targets:s.targets,createdAt:s.createdAt,simulation:s.simulation})),summary:simulationTotals(published?.signals||[],published?.simulationArchive)});
   if(url.pathname==='/api/market')return json(status().markets);

@@ -1,6 +1,7 @@
 // Read-only, bounded public-market relay. Separate worker; shared bot relay unchanged.
 const ROOT='https://api.bybit.com';
 const oiCache=new Map();
+export function validMarketSymbol(s){return /^[A-Z0-9]{1,20}USDT$/.test(s);}
 async function interest(symbol){const old=oiCache.get(symbol);if(old&&Date.now()-old.at<300000)return old.value;const value=(await get(`/v5/market/open-interest?category=linear&symbol=${symbol}&intervalTime=5min&limit=13`)).list;oiCache.set(symbol,{at:Date.now(),value});if(oiCache.size>100)oiCache.delete(oiCache.keys().next().value);return value;}
 async function boundedMap(rows,fn){const out=[];for(let i=0;i<rows.length;i+=3){out.push(...await Promise.all(rows.slice(i,i+3).map(fn)));if(i+3<rows.length)await new Promise(r=>setTimeout(r,150));}return out;}
 async function get(path) {
@@ -15,7 +16,7 @@ export default {async fetch(request) {
     if(request.method!=='GET') return Response.json({ok:false},{status:405});
     const u=new URL(request.url),mode=u.searchParams.get('mode');
     if(u.pathname==='/health') return Response.json({ok:true,service:'crypto-engine-free-market'});
-    const symbols=[...new Set((u.searchParams.get('symbols')||'').split(','))].filter(s=>/^[A-Z0-9]{2,20}USDT$/.test(s)).slice(0,12);
+    const symbols=[...new Set((u.searchParams.get('symbols')||'').split(','))].filter(validMarketSymbol).slice(0,12);
     if(mode==='bootstrap') {
       const [info,tickers]=await Promise.all([get('/v5/market/instruments-info?category=linear&status=Trading&limit=1000'),get('/v5/market/tickers?category=linear')]);
       return Response.json({ok:true,info:info.list,tickers:tickers.list,generatedAt:Date.now()});

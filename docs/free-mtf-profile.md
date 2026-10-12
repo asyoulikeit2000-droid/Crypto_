@@ -4,9 +4,9 @@
 
 ## Scan and strategies
 
-Model `mtf_free_tiers_v3` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
+Model `mtf_h4_dual_v4` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
 
-Both strategies require 200+ continuous, current, closed H1/H4/D1 candles; EMA20/50 direction and slope alignment; altcoin alignment with BTC; fresh book/trade/receipt times <=90 seconds; spread <=6 bps; funding absolute rate <=0.05%; and fresh open interest with roughly one-hour change >=-1.5%.
+The daily-aligned family requires 200+ continuous, current, closed H1/H4/D1 candles; EMA20/50 direction and slope alignment; altcoin alignment with BTC; fresh book/trade/receipt times <=90 seconds; spread <=6 bps; funding absolute rate <=0.05%; and fresh open interest with roughly one-hour change >=-1.5%.
 
 - Trend breakout: a directional H1 close outside the prior 20-bar extreme, volume >=1.2 times the prior mean.
 - Trend pullback: the same higher-timeframe trend, a recent touch of H1 EMA20, a directional recovery above/below the previous close and EMA20 within one ATR, and the same volume threshold.
@@ -14,6 +14,14 @@ Both strategies require 200+ continuous, current, closed H1/H4/D1 candles; EMA20
 Structural six-bar stop plus 0.2 ATR buffer; stop distance 0.4–5%, at least 1.2 ATR. Entry rounds toward the adverse fill direction, stop away from entry, targets conservatively toward entry. Recheck rounded risk and net TP2/stop scenario >=1.6 after modeled costs. Score >=80 ranks technical agreement and is never a win probability. TP1/TP2/TP3 approximate 1R/2R/3R after rounding.
 
 At most four per Dubai day, two per batch, one hour between batches, and one signal per asset/day. The entry window is at most one hour and is shortened before an upcoming event blackout. A stale feed, failed checkpoint, missing context, expired window or price outside the narrow entry zone prevents actionable status. Observed price reaching stop or TP1 cancels the entry and is not a tracked trade outcome. Intracycle excursions may be missed; users must independently check the current market and their own fills.
+
+## H4-led strategy family
+
+A separate H4_LED family requires 200+ continuous closed H4 and H1 candles, their EMA20/50 direction and slope agreement, and the same closed-H1 breakout or pullback trigger and volume >=1.2 baseline. D1 is displayed as context and may be neutral, opposite, or unavailable; it never silently becomes a passed alignment vote. BTC H4 must not oppose altcoin direction; BTC D1 does not gate this family. The original daily-aligned family remains unchanged.
+
+Liquidity, spread, funding, open interest, anti-chasing, structural stop, entry freshness, context/flow/OKX checks, successful checkpoint and shared daily/asset caps still apply. H4-led targets use 1.5R/2.5R/3.5R and require net TP1/stop >=1.2 after modeled fees/slippage, because the simulation actually closes at TP1. This is a design rule, not a calibrated profitability threshold. Scores remain mechanical, not probabilities. When both families qualify an asset, the original daily-aligned family has priority; only one is published. Closed-trigger IDs and one-asset/day policy prevent duplicate entries. The API and market dialogs expose the result of both families, not just a single opaque blocker. Win-rate detail panels separate families; retained historic signals without a family are assigned to DAILY_ALIGNED. Older archived outcomes predating family attribution cannot be reconstructed.
+
+History retries rotate fairly by oldest attempt, bounded to three assets per cycle and one attempt per asset per minute. The market relay accepts exact 1–20 character alphanumeric token bases, including S and W, while continuing to reject malformed query symbols. Provider outages never make stale prices actionable. No subscription or additional candle persistence is added. No complete historical backtest or forward validation is claimed; one stopped-out ONDO setup provides no statistically useful win-rate estimate.
 
 ## Context gates and source coverage
 
