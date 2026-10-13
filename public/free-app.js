@@ -108,7 +108,7 @@ function renderDetail(){
 function openDetail(key){selectedDetail=key;renderDetail();if(!$('detail-dialog').open)$('detail-dialog').showModal();}
 function applyTheme(theme){
  document.documentElement.dataset.theme=theme;const light=theme==='light';$('theme-toggle').textContent=light?'Dark mode ☾':'Light mode ☀';$('theme-toggle').setAttribute('aria-label',light?'Switch to dark mode':'Switch to light mode');
- const meta=document.querySelector?.('meta[name="theme-color"]');meta?.setAttribute('content',light?'#f4f7fb':'#0b1220');
+ const meta=document.querySelector?.('meta[name="theme-color"]');meta?.setAttribute('content',light?'#f5f4f1':'#080808');
  try{localStorage.setItem('my-trade-theme',theme);}catch{}
 }
 function renderSignalTable(signals,now,storageGood,offline){
