@@ -22,11 +22,15 @@ function flowFresh(t,now){return t?.flowAvailable&&finite(t.periodEnd)&&now-t.pe
 function indicatorTable(indicators){
  return `<div class="table-scroll"><table><thead><tr><th>Timeframe</th><th>Trend</th><th>EMA20</th><th>EMA50</th><th>RSI14</th><th>ATR14</th></tr></thead><tbody>${Object.entries(indicators).map(([tf,i])=>`<tr><td>${esc(tf)}</td>${i.available===false?`<td colspan="5">${esc(i.reason)}</td>`:`<td>${esc(i.trend||'Aligned')}</td><td>${price(i.ema20)}</td><td>${price(i.ema50)}</td><td>${finite(i.rsi14)?Number(i.rsi14).toFixed(1):'Unavailable'}</td><td>${price(i.atr14)}</td>`}</tr>`).join('')}</tbody></table></div>`;
 }
-function signalHtml(s,n,now,storageGood,offline,openButton=true){
+function signalEntryMessage(s,now,storageGood,offline){
     const h=data.health;
     const market=h.markets.find(m=>m.symbol===s.symbol),feedOk=market&&now-market.bookAt<=90000&&now-market.tradeAt<=90000&&now-market.receivedAt<=90000;
     const valid=entryAvailable(s,now);
-    const entryMessage=valid?'Entry review available':offline?'Dashboard disconnected; entry blocked':!storageGood?'Persistence unavailable; entry blocked':!feedOk?'Market feed stale; entry blocked':now>=s.entryValidUntil?'Entry window expired':!venueValid(market,now)?'Cross-venue price unavailable or conflicting; entry blocked':s.contextBlock||s.entryStatus?.reason||s.status;
+    return valid?'Entry review available':offline?'Dashboard disconnected; entry blocked':!storageGood?'Persistence unavailable; entry blocked':!feedOk?'Market feed stale; entry blocked':now>=s.entryValidUntil?'Entry window expired':!venueValid(market,now)?'Cross-venue price unavailable or conflicting; entry blocked':s.contextBlock||s.entryStatus?.reason||s.status;
+
+}
+function signalHtml(s,n,now,storageGood,offline,openButton=true){
+    const entryMessage=signalEntryMessage(s,now,storageGood,offline);
     const labels=['SL',...(s.targetR||[1,2,3]).map((r,i)=>'TP'+(i+1)+' · ~'+r+'R')],levels=[s.pnl.stop,...s.pnl.targets];
     return `<article class="card signal-card"><p class="tier ${s.coverageTier==='TECHNICAL_CONTEXT'?'warn':'good'}">${s.coverageTier==='TECHNICAL_CONTEXT'?'TECHNICAL + PUBLIC CONTEXT · Token exchange flows unavailable':'FLOW CONFIRMED · Daily token exchange flows checked'}</p><div class="card-head"><h3>${esc(s.symbol)} <span class="${s.direction==='LONG'?'good':'warn'}">${esc(s.direction)}</span></h3><span class="pill">${esc(s.score)}/100 rule score</span></div>${openButton?`<button class="signal-open" data-open-market="${esc(s.symbol)}">Open full signal &amp; market review ↗</button>`:''}<p>${esc(s.family==='H4_LED'?'H4-led · daily context only':'Daily-aligned')} · ${esc(s.strategy||'Legacy strategy')} · ${esc(date(s.createdAt))} · ${esc(entryMessage)} · Manual entry only</p><div class="levels"><div><span>Entry limit reference (USDT)</span><b>${price(s.entry)}</b></div>${levels.map((p,i)=>`<div><span>${labels[i]}</span><b>${price(p.price)}</b><p class="${p.netBeforeFundingUsd<0?'bad':'good'}">${dollars(p.netBeforeFundingUsd*n/1000)}</p></div>`).join('')}</div><p>Entry zone ${s.entryZone.map(price).join(' – ')} · Stop distance ${(s.riskPct*100).toFixed(2)}% · ${esc(s.reason)}</p><p>Valid until ${esc(date(s.entryValidUntil))} · Tick size ${esc(s.tickSize)} · Do not chase outside the entry zone.</p><p class="muted">D1 ${esc(s.analysis.d1)} / H4 ${esc(s.analysis.h4)} / H1 ${esc(s.analysis.h1)} · Volume ${s.analysis.volumeRatio.toFixed(2)}× · Statistical expected P&L: unavailable${s.outcomeReason?' · Archived outcome: '+esc(s.outcomeReason):''}</p>${s.analysis.indicators?`<h4>Strategy evidence · ${esc(s.strategy)}</h4>${indicatorTable(s.analysis.indicators)}<p>ATR / price ${s.analysis.atrPct.toFixed(2)}% · Volume ${s.analysis.volumeRatio.toFixed(2)}× baseline · Net TP1 / SL ${finite(s.analysis.firstTargetNetRR)?s.analysis.firstTargetNetRR.toFixed(2):'Unavailable'}R · Net TP2 / SL scenario ${s.analysis.netRewardRisk.toFixed(2)}R after modelled fees and slippage, before funding.</p><p class="muted">RSI is supporting context, not an extra independent confirmation or a win probability.</p>`:''}${s.venue?`<p>Price corroboration: ${esc(s.venue.source)} ${esc(s.venue.instrument)} · ${price(s.venue.price)} USDT · ${s.venue.deviationBps.toFixed(2)} bps from Bybit at publication · observed ${esc(date(s.venue.at))}</p>`:''}${s.context?`<p>Context checked ${esc(date(s.context.checkedAt))} · ${s.context.flow?'Daily exchange net inflow '+dollars(s.context.flow.netInflowUsd)+' · Active addresses '+(s.context.flow.activeAddresses==null?'Unavailable':price(s.context.flow.activeAddresses))+' · '+(s.context.flow.provisional?'Provisional/revisable data':'Daily provider evidence'):'Token exchange flows UNAVAILABLE — this is a technical signal, not flow-confirmed.'}</p><p>${esc(s.context.coverageNote||'Daily labelled exchange flows checked')} · ${esc(s.context.newsMethod)}. Consensus forecasts unavailable.</p>${s.context.headlines.map(x=>`<p><a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)}</a> · ${esc(date(x.publishedAt))}</p>`).join('')}`:''}</article>`;
 
@@ -106,12 +110,22 @@ function applyTheme(theme){
  const meta=document.querySelector?.('meta[name="theme-color"]');meta?.setAttribute('content',light?'#f4f7fb':'#0b1220');
  try{localStorage.setItem('my-trade-theme',theme);}catch{}
 }
+function renderSignalTable(signals,now,storageGood,offline){
+ const root=$('signal-rows');if(!root)return;
+ const fullDate=t=>new Date(t).toLocaleString('en-GB',{timeZone:'Asia/Dubai',year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+ const html=signals.map(s=>{
+  const message=signalEntryMessage(s,now,storageGood,offline),active=entryAvailable(s,now);
+  return `<tr><td><time datetime="${esc(new Date(s.createdAt).toISOString())}">${esc(fullDate(s.createdAt))}</time><small>Window ends ${esc(fullDate(s.entryValidUntil))}</small></td><td><button type="button" class="trade-open" data-detail="trade:${esc(s.id)}" aria-haspopup="dialog" aria-label="${esc(s.symbol)} signal summary and details"><strong>${esc(s.symbol)}</strong><em>View signal ↗</em></button></td><td>${price(s.entry)}</td><td class="${s.direction==='LONG'?'good':'warn'}">${esc(s.direction)}</td><td>${price(s.stop)}</td>${[0,1,2].map(i=>`<td>${price(s.targets?.[i])}</td>`).join('')}<td><span class="outcome ${active?'win':'pending'}">${esc(message)}</span></td></tr>`;
+ }).join('')||'<tr><td colspan="9" class="empty">No published signals yet. Qualifying signals appear here once saved.</td></tr>';
+ updateSummaryCards('signal-rows',html);
+}
 function render(){
   if(!data)return;const h=data.health,now=Date.now(),offline=now-lastResponse>45000,storageAge=h.storage.lastSuccess?now-h.storage.lastSuccess:Infinity,storageGood=h.storage.ok&&storageAge<300000;
   const fresh=h.markets.filter(m=>m.bookAt&&m.tradeAt&&now-m.bookAt<=90000&&now-m.tradeAt<=90000&&now-m.receivedAt<=90000).length;
   updateSummaryCards('health',[['Market feeds',offline?'DISCONNECTED':fresh+'/'+h.feed.total+' fresh',!offline&&fresh===h.feed.total?'good':'warn'],['Persistence',storageGood&&!offline?age(h.storage.lastSuccess,now)+' ago':'DELAYED / BLOCKED',storageGood&&!offline?'good':'bad'],['Today’s setups',h.selectedToday+' · No cap','good'],['Context',h.context?.ok?'READY':'LOADING / BLOCKED',h.context?.ok?'good':'warn'],['OKX check',h.venue?.ok?'READY':'LOADING / BLOCKED',h.venue?.ok?'good':'warn'],['Mode','MANUAL SIGNALS','good']].map(([title,value,cls],i)=>`<button type="button" class="metric" data-detail="health:${i}" aria-haspopup="dialog" aria-label="${esc(title)} summary and details"><small>${title}</small><strong class="${cls}">${value}</strong><em>Details ↗</em></button>`).join(''));
   const n=Math.min(1000000,Math.max(1,Number($('notional').value)||15000)),signals=[...data.signals].sort((a,b)=>b.createdAt-a.createdAt);
   $('signals').innerHTML=signals.length?signals.map(s=>signalHtml(s,n,now,storageGood,offline)).join(''):'<div class="empty"><strong>No qualifying signals yet.</strong><p>Open a market card below to see the current blocker and supporting evidence. Entry, TP and SL are published only after strategy, public-context and OKX price checks plus a successful checkpoint. Flow-confirmed and technical-only signals are labelled separately.</p></div>';
+  renderSignalTable(signals,now,storageGood,offline);
   renderSimulations(n,now,offline);
   renderExplorer(now,storageGood,offline,n);
   $('markets').innerHTML=h.markets.map(m=>{const r=data.review.find(r=>r.symbol===m.symbol);return `<tr><td>${esc(m.symbol)}</td><td>${price(m.price)}</td><td>${age(m.bookAt,now)}</td><td>${age(m.tradeAt,now)}</td><td>${esc(r?.eligible?'Qualified; subject to daily cap and persistence':r?.reason||'History warming')}</td></tr>`;}).join('');
@@ -131,7 +145,7 @@ $('market-close').addEventListener('click',()=>$('market-dialog').close());
 $('market-dialog').addEventListener('close',()=>{selectedSymbol=null;render();});
 $('notional').addEventListener('input',render);refresh();setInterval(refresh,15000);setInterval(render,1000);
 
-for(const id of ['health','simulation-metrics','simulation-trades','market-detail'])$(id).addEventListener('click',e=>{const button=e.target.closest('[data-detail]');if(button)openDetail(button.dataset.detail);});
+for(const id of ['health','simulation-metrics','simulation-trades','signal-rows','market-detail'])$(id)?.addEventListener('click',e=>{const button=e.target.closest('[data-detail]');if(button)openDetail(button.dataset.detail);});
 $('detail-close').addEventListener('click',()=>$('detail-dialog').close());
 $('detail-dialog').addEventListener('close',()=>{selectedDetail=null;});
 $('theme-toggle').addEventListener('click',()=>applyTheme(document.documentElement.dataset.theme==='light'?'dark':'light'));
