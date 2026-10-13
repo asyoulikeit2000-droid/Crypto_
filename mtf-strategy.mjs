@@ -1,6 +1,6 @@
 export const MODEL = 'mtf_h4_dual_v4';
 export const INTERVALS = {H1: 3_600_000, H4: 14_400_000, D1: 86_400_000};
-export const DAILY_CAP = 4;
+export const DAILY_CAP = null; // No arbitrary daily publication cap.
 export const FEE_RATE = 0.00055;
 export const SLIPPAGE_RATE = 0.00015;
 const finite = v => v !== null && v !== '' && Number.isFinite(Number(v));
@@ -111,12 +111,20 @@ export function invalidateEntry(signal,market,now) {
   if(side*(market.price-signal.stop)<=0||side*(market.price-signal.targets?.[0])>=0)return {...signal,status:'INVALIDATED',invalidatedAt:now,invalidationReason:'Observed stop or TP1 reached; entry cancelled (not a tracked trade outcome)'};
   return signal;
 }
-export function selectSetups(candidates, signals, now) {
-  const today=signals.filter(s=>reviewDay(s.createdAt)===reviewDay(now));
-  const blocked=new Set([...today,...signals.filter(s=>s.entryValidUntil>now)].map(s=>s.symbol));
-  const recent=signals.some(s=>now-s.createdAt<3_600_000);
-  if(recent) return [];
-  return candidates.filter(c=>c.eligible&&!blocked.has(c.symbol)).sort((a,b)=>b.score-a.score || a.symbol.localeCompare(b.symbol)).slice(0,Math.max(0,Math.min(2,DAILY_CAP-today.length))).map(c=>({...c,id:`${MODEL}:${c.symbol}:${c.candleAt}:${c.direction}`,createdAt:now,status:'OPEN',day:reviewDay(now)}));
+export function selectSetups(candidates, signals, now, {triggerWatermarks={}}={}) {
+  const seen=new Map(Object.entries(triggerWatermarks));
+  const active=new Set();
+  for(const s of signals){
+    if(Number.isFinite(s.candleAt))seen.set(s.symbol,Math.max(Number(seen.get(s.symbol)||0),s.candleAt));
+    if(s.simulation?.status==='OPEN'||!s.simulation&&s.status==='OPEN'&&s.entryValidUntil>now)active.add(s.symbol);
+  }
+  const selected=[];
+  for(const c of candidates.filter(c=>c.eligible).sort((a,b)=>b.score-a.score||a.symbol.localeCompare(b.symbol))){
+    if(active.has(c.symbol)||!Number.isFinite(c.candleAt)||c.candleAt<=Number(seen.get(c.symbol)||0))continue;
+    selected.push({...c,id:`${MODEL}:${c.symbol}:${c.candleAt}:${c.direction}`,createdAt:now,status:'OPEN',day:reviewDay(now)});
+    seen.set(c.symbol,c.candleAt);active.add(c.symbol);
+  }
+  return selected;
 }
 // Conservative candle model: partial entry candle cannot establish intrabar order.
 // Any gap/ambiguous entry invalidates evidence; never counted as a win.
