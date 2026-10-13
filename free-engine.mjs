@@ -1,3 +1,4 @@
+import {compactSignalLedger} from './signal-ledger.mjs';
 import {initSimulation,advanceSimulation,simulationTotals,simulationView} from './simulated-trades.mjs';
 import {createVenueContext,venueGate} from './free-venue-context.mjs';
 import http from 'node:http';
@@ -74,7 +75,7 @@ function status() {
   const now=Date.now(),p=store.status(),markets=working.symbols.map(s=>({...runtime.market[s],symbol:s,...freshness(runtime.market[s],now)}));
   const venue=venueContext.status(),venueOk=venue.available&&venue.fetchedAt<=now+5000&&now-venue.fetchedAt<=90000;
   const fresh=markets.filter(m=>m.fresh).length,storageOk=p.recovered&&!p.error&&p.lastSuccess>0&&now-p.lastSuccess<300_000,contextHealth=contextReadiness(context.status(),now,{allowTechnicalSignals:true});
-  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{strategyFamilies:['DAILY_ALIGNED','H4_LED'],technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:true,simulationEnabled:true,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:4,selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length};
+  return {ok:storageOk&&contextHealth.ok&&venueOk&&fresh>=Math.min(5,working.symbols.length)&&working.symbols.length>=5,context:contextHealth,venue:{ok:venueOk,source:"OKX",fetchedAt:venue.fetchedAt,reason:venue.reason},signalPolicy:{strategyFamilies:['DAILY_ALIGNED','H4_LED'],technicalSignalsEnabled:true,flowConfirmedSymbols:contextHealth.flowSymbols,requiredVenue:"OKX",referenceVenue:"Bybit"},profile:'free_mtf',model:MODEL,paperOnly:false,manualSignalsOnly:true,paperMonitoringEnabled:true,simulationEnabled:true,executionEnabled:false,revision:runtime.revision,startedAt:runtime.startedAt,lastBook:runtime.lastBook,lastTrade:runtime.lastTrade,lastPoll:runtime.lastPoll,lastReview:runtime.lastReview,storage:{...p,ok:storageOk,ageMs:p.lastSuccess?now-p.lastSuccess:null,plannedLogicalWritesPerDay:720,indexedWriteEstimatePerDay:7920,estimateNote:'Conservative 11 D1 rows per document save; other services share the account allowance'},feed:{fresh,total:markets.length},markets,errors:runtime.errors,evidence:{status:'RULE_BASED_UNVALIDATED',expectedPnlAvailable:false,reason:'Rule score is not a win probability; forward outcomes and complete funding costs required'},day:reviewDay(now),dailyCap:null,publicationPolicy:{dailyCap:null,batchCap:null,globalCooldownMs:0,duplicateGuard:'one publication per symbol/closed-H1 trigger',positionGuard:'one active simulated position per symbol'},selectedToday:(published?.signals||[]).filter(s=>reviewDay(s.createdAt)===reviewDay(now)).length+(published?.archivedPublicationsByDay?.[reviewDay(now)]||0)};
 }
 async function cycle() {
   if(busy)return;busy=true;
@@ -100,16 +101,11 @@ async function cycle() {
       return {...chosen,strategyReviews:reviews.map(({family,eligible,reason,strategy,direction,score})=>({family,eligible,reason,strategy,direction,score}))};
     });
     runtime.lastReview=now;
-    const expired=working.signals.filter(s=>now-s.createdAt>7*86_400_000).map(s=>({...s,simulation:s.simulation?.status==='OPEN'?{...s.simulation,status:'UNRESOLVED',reason:'Evidence recovery exceeded seven-day retention'}:s.simulation}));
-    const archived=simulationTotals(expired,working.simulationArchive);
-    working.simulationFamilyArchive ||= {};
-    for(const family of ['DAILY_ALIGNED','H4_LED']){const total=simulationTotals(expired.filter(s=>(s.family||'DAILY_ALIGNED')===family),working.simulationFamilyArchive[family]);working.simulationFamilyArchive[family]=Object.fromEntries(['tp','stop','timeout','unresolved','ambiguous','netPnlUsdt'].map(k=>[k,total[k]]));}
-    working.simulationArchive=Object.fromEntries(['tp','stop','timeout','unresolved','ambiguous','netPnlUsdt'].map(k=>[k,archived[k]]));
-    working.signals=working.signals.filter(s=>now-s.createdAt<=7*86_400_000).map(s=>invalidateEntry(s,runtime.market[s.symbol],now));
-    const candidates=selectSetups(runtime.review,working.signals,now);
+    working.signals=working.signals.map(s=>invalidateEntry(s,runtime.market[s.symbol],now));
+    const candidates=selectSetups(runtime.review,working.signals,now,{triggerWatermarks:working.triggerWatermarks});
     const next={...working,signals:[...working.signals,...candidates.map(s=>({...s,simulation:initSimulation(s)}))]};
     // Selection is visible only after the same checkpoint commits its daily cap.
-    const saved=await store.save({...next,histories:{}});
+    const saved=await store.save(compactSignalLedger({...next,histories:{}},now));
     if(saved){working={...saved,histories:working.histories};published=structuredClone(saved);}
   } catch(e){error(e);if(e.conflict)runtime.recovered=false;}finally{busy=false;}
 }
