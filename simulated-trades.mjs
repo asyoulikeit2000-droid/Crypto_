@@ -31,12 +31,27 @@ export function retainedPerformance(signals){
  const profit=wins.reduce((a,b)=>a+b,0),loss=-losses.reduce((a,b)=>a+b,0);
  return {scope:'RETAINED_COMPLETED_RECEIPTS',count:rows.length,profitFactor:loss>0?profit/loss:null,noLosses:rows.length>0&&loss===0,averagePnlUsdt:rows.length?(profit-loss)/rows.length:null,averageWinUsdt:wins.length?profit/wins.length:null,averageLossUsdt:losses.length?loss/losses.length:null,firstClosedAt:rows.length?Math.min(...rows.map(s=>s.simulation.closedAt||s.createdAt)):null,lastClosedAt:rows.length?Math.max(...rows.map(s=>s.simulation.closedAt||s.createdAt)):null};
 }
+// Retained cohorts deliberately exclude archives: older checkpoints have no model attribution.
+export function modelPerformance(signals){
+ const groups=new Map();
+ for(const signal of signals){
+  const model=typeof signal.model==='string'&&signal.model.trim()?signal.model:'UNKNOWN_LEGACY';
+  const family=signal.family||'DAILY_ALIGNED',key=JSON.stringify([model,family]);
+  if(!groups.has(key))groups.set(key,{model,family,signals:[]});
+  groups.get(key).signals.push(signal);
+ }
+ return [...groups.values()].map(({model,family,signals:rows})=>{
+  const tp=rows.filter(s=>s.simulation?.status==='TP1').length;
+  const stop=rows.filter(s=>s.simulation?.status==='STOP').length;
+  return {model,family,scope:'RETAINED_RECEIPTS_ONLY',published:rows.length,resolved:tp+stop,tp,stop,winRate:tp+stop?100*tp/(tp+stop):null,performance:retainedPerformance(rows)};
+ }).sort((a,b)=>a.model.localeCompare(b.model)||a.family.localeCompare(b.family));
+}
 export function simulationTotals(signals,archived={}){
  const totals={tp:0,stop:0,timeout:0,unresolved:0,open:0,ambiguous:0,netPnlUsdt:0,...archived};
  for(const signal of signals){const s=signal.simulation;if(!s){totals.open++;continue;}if(s.status==='TP1')totals.tp++;else if(s.status==='STOP')totals.stop++;else if(s.status==='TIMEOUT')totals.timeout++;else if(s.status==='UNRESOLVED')totals.unresolved++;else totals.open++;
   if(s.ambiguous)totals.ambiguous++;if(['TP1','STOP','TIMEOUT'].includes(s.status)&&Number.isFinite(s.netPnlUsdt))totals.netPnlUsdt+=s.netPnlUsdt;
  }
- return {...totals,retainedPerformance:retainedPerformance(signals),resolved:totals.tp+totals.stop,winRate:totals.tp+totals.stop?totals.tp/(totals.tp+totals.stop)*100:null,notionalUsdt:SIM_NOTIONAL,method:'Assumed publication-price fill; full exit at TP1 or stop; stop first on same-minute ties; estimated fees/slippage; funding excluded'};
+ return {...totals,retainedPerformance:retainedPerformance(signals),modelPerformance:modelPerformance(signals),resolved:totals.tp+totals.stop,winRate:totals.tp+totals.stop?totals.tp/(totals.tp+totals.stop)*100:null,notionalUsdt:SIM_NOTIONAL,method:'Assumed publication-price fill; full exit at TP1 or stop; stop first on same-minute ties; estimated fees/slippage; funding excluded'};
 }
 export function simulationView(signal,market,now){
  const s=signal.simulation||initSimulation(signal),fresh=freshness(market,now).fresh;
