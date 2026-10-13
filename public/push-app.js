@@ -7,7 +7,10 @@
  const api=async(path,method='GET',body)=>{const r=await fetch('/api/push/'+path,{method,headers:{...(body?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})});const j=await r.json();if(!r.ok)throw Error(j.error||'Notification service unavailable');return j;};
  async function refresh(){
   if(!token)return;
-  try{const s=await api('status');disable.hidden=false;test.hidden=!s.active;
+  try{
+   const r=await ready,sub=await r.pushManager.getSubscription();
+   if(Notification.permission!=='granted'||!sub){message('Browser alerts are disabled on this device. Enable notifications or change this site’s permission in browser settings.');enable.hidden=false;disable.hidden=false;test.hidden=true;return;}
+   const s=await api('status');disable.hidden=false;test.hidden=!s.active;
    if(s.active){message('Background signal alerts enabled on this device. Only fresh, newly saved signals are eligible; opening an alert rechecks the live entry.');enable.hidden=true;clearInterval(timer);}
    else if(s.pending)message('Saving this device securely… allow up to 3 minutes. Keep this page open until enabled.');
    else{message('This device is not registered. Enable notifications to reconnect it.');enable.hidden=false;}
