@@ -77,3 +77,12 @@ Rollback to a prior Free/manual release only; legacy writers consume excessive r
 - https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 - https://bybit-exchange.github.io/docs/v5/market/instrument
 - https://developers.cloudflare.com/d1/platform/pricing/
+
+
+## Opt-in background signal alerts
+
+`/api/push/config` exposes only the public VAPID key. Device subscriptions and the private key live inside the existing authenticated checkpoint, never dashboard responses or logs. Device writes use the same compare-and-swap and 120-second write throttle. Registration returns pending until an acknowledged checkpoint includes it, and works through temporary market-source failures. Twenty devices maximum; Firefox, Chrome/FCM and Safari/Apple push endpoints are allowlisted, with strict key validation, body limits, same-origin POST checks and request rate limits. No trading endpoint is introduced.
+
+Only newly committed signals produce an outbox event. Each delivery rechecks live actionable status; old/expired/invalidated signals cannot notify. Events expire after three minutes or the entry-window end, whichever comes first; transient failures retry within that window, revoked subscriptions are removed on the next checkpoint. Durable outbox acknowledgments and service-worker IndexedDB suppress duplicate IDs across restarts. No dashboard caching or offline entry advice is introduced. Alerts include entry, stop and targets, with a reminder to recheck the dashboard; they do not guarantee execution or device delivery.
+
+Use **Enable notifications** on each device and grant permission. Keep the page open until it confirms registration (up to three minutes); it may then close. iPhone/iPad requires a Home Screen web app and a supported OS/browser. Browser/system permissions, network access, power management and push-service availability affect delivery. **Test device notification** is explicitly a local display test, not a server-to-device delivery test. **Disable notifications** unsubscribes the browser immediately and queues authenticated checkpoint removal. No paid notification provider is required.

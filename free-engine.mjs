@@ -1,3 +1,4 @@
+import {createPushAlerts,readPushBody} from './push-alerts.mjs';
 import {compactSignalLedger} from './signal-ledger.mjs';
 import {initSimulation,advanceSimulation,simulationTotals,simulationView} from './simulated-trades.mjs';
 import {createVenueContext,venueGate} from './free-venue-context.mjs';
@@ -15,6 +16,8 @@ const context=createContext();
 const venueContext=createVenueContext();
 const historyAttempts=new Map(),simulationAttempts=new Map();
 const instruments=new Map();
+const pushAlerts=createPushAlerts();
+const pushRate=new Map();
 const runtime={startedAt:Date.now(),revision:process.env.RAILWAY_GIT_COMMIT_SHA||'local',market:{},errors:[],review:[],lastPoll:null,lastReview:null,lastBook:null,lastTrade:null,recovered:false};
 let working={version:1,savedAt:0,symbols:[],histories:{},signals:[]},published=null,lastUniverse=0,busy=false;
 const error=e=>{runtime.errors=[{at:Date.now(),message:String(e.message||e).slice(0,300)},...runtime.errors].slice(0,5);};
@@ -83,6 +86,12 @@ async function cycle() {
     if(!runtime.recovered) {
       const saved=await store.load();if(saved)working=saved;published=structuredClone(working);runtime.recovered=true;historyAttempts.clear();
     }
+    // Commit device changes even if the market source is temporarily unavailable.
+    if(pushAlerts.needsSave(working)||!published?.pushAlerts){
+      const prepared=pushAlerts.prepare(working);
+      const saved=await store.save(compactSignalLedger({...prepared.value,histories:{}},Date.now()));
+      if(saved){working={...saved,histories:working.histories};published=structuredClone(saved);prepared.ack();}
+    }
     if(!working.symbols.length||Date.now()-lastUniverse>6*3_600_000)await universe();
     // Feed ingestion never waits for storage writes; both have independent freshness.
     await snapshot();
@@ -104,17 +113,37 @@ async function cycle() {
     working.signals=working.signals.map(s=>invalidateEntry(s,runtime.market[s.symbol],now));
     const candidates=selectSetups(runtime.review,working.signals,now,{triggerWatermarks:working.triggerWatermarks});
     const next={...working,signals:[...working.signals,...candidates.map(s=>({...s,simulation:initSimulation(s)}))]};
-    // Selection is visible only after the same checkpoint commits its daily cap.
-    const saved=await store.save(compactSignalLedger({...next,histories:{}},now));
-    if(saved){working={...saved,histories:working.histories};published=structuredClone(saved);}
+    // Alerts and signals become visible only after the same checkpoint commits.
+    const prepared=pushAlerts.prepare(next,candidates);
+    const saved=await store.save(compactSignalLedger({...prepared.value,histories:{}},now));
+    if(saved){working={...saved,histories:working.histories};published=structuredClone(saved);prepared.ack();}
+    void pushAlerts.deliver(published,()=>displayedSignals()).catch(()=>{});
   } catch(e){error(e);if(e.conflict)runtime.recovered=false;}finally{busy=false;}
 }
 function strategyPerformance(){return ['DAILY_ALIGNED','H4_LED'].map(family=>({family,...simulationTotals((published?.signals||[]).filter(s=>(s.family||'DAILY_ALIGNED')===family),published?.simulationFamilyArchive?.[family])}));}
-const routes={'/':'free.html','/free-app.js':'free-app.js','/free.css':'free.css'};
+const routes={'/':'free.html','/free-app.js':'free-app.js','/free.css':'free.css','/push-app.js':'push-app.js','/sw.js':'sw.js','/manifest.webmanifest':'manifest.webmanifest','/app-icon.svg':'app-icon.svg'};
 function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,simulation:simulationView(saved,runtime.market[s.symbol],now),entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const json=(data,code=200)=>{res.writeHead(code,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data));};
+  if(url.pathname.startsWith('/api/push/')){
+    const token=req.headers.authorization?.replace(/^Bearer /,'');
+    if(req.method==='GET'&&url.pathname==='/api/push/config')return json({available:!!published?.pushAlerts,publicKey:published?.pushAlerts?.publicKey||null});
+    if(req.method==='GET'&&url.pathname==='/api/push/status')return json(pushAlerts.deviceStatus(published,token));
+    if(req.method!=='POST')return json({error:'method_not_allowed'},405);
+    if(req.headers.origin!=='https://crypto-engine-production-production.up.railway.app')return json({error:'same_origin_required'},403);
+    if(!published?.pushAlerts)return json({error:'Notification storage is warming; try again shortly'},503);
+    const ip=String(req.headers['x-forwarded-for']||req.socket.remoteAddress).split(',').at(-1).trim(),now=Date.now();
+    for(const[k,v]of pushRate)if(now-v.at>60000)pushRate.delete(k);
+    const rate=pushRate.get(ip)||{at:now,n:0};
+    if(rate.n>=6||pushRate.size>=1000)return json({error:'Please wait a minute before retrying'},429);
+    rate.n++;pushRate.set(ip,rate);
+    try{
+      if(url.pathname==='/api/push/subscribe'){const body=await readPushBody(req);return json(pushAlerts.register(published,body.subscription,token),202);}
+      if(url.pathname==='/api/push/unsubscribe'){pushAlerts.remove(published,token);return json({pending:true},202);}
+      return json({error:'not_found'},404);
+    }catch{return json({error:'Invalid or unsupported subscription; reset this device subscription and retry'},400);}
+  }
   if(req.method!=='GET')return json({error:'read_only'},405);
   if(url.pathname==='/api/health'||url.pathname==='/api/ready'){const h=status();return json(h,h.ok?200:503);}
   // Explicit liveness is distinct from readiness: a quota-blocked engine remains
@@ -126,6 +155,6 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/market')return json(status().markets);
   if(url.pathname==='/api/pre-rally')return json({enabled:false,reason:'Free profile focuses on liquid MTF setups'});
   const file=routes[url.pathname];if(!file)return json({error:'not_found'},404);
-  try {res.writeHead(200,{'content-type':file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(await readFile(new URL('./public/'+file,import.meta.url)));}catch{res.end('Unavailable');}
+  try {res.writeHead(200,{'content-type':file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':file.endsWith('.webmanifest')?'application/manifest+json':file.endsWith('.svg')?'image/svg+xml':'text/html','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(await readFile(new URL('./public/'+file,import.meta.url)));}catch{res.end('Unavailable');}
 });
 server.listen(Number(process.env.PORT||3000),process.env.HOST||'0.0.0.0',()=>{console.log('Manual MTF signal server started; hypothetical monitoring enabled; execution disabled');cycle();setInterval(cycle,30_000);});
