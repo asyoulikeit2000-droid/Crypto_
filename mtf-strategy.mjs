@@ -1,4 +1,4 @@
-export const MODEL = 'mtf_h4_dual_v4';
+export const MODEL = 'mtf_tp1_quality_v5';
 export const INTERVALS = {H1: 3_600_000, H4: 14_400_000, D1: 86_400_000};
 export const DAILY_CAP = null; // No arbitrary daily publication cap.
 export const FEE_RATE = 0.00055;
@@ -83,18 +83,18 @@ export function evaluateMtf(symbol, history, market, btcHistory, now, {family='D
   const stop=structure-side*a*.2,risk=side*(price-stop),riskPct=risk/price;
   if(riskPct<.004 || riskPct>.05 || risk<a*1.2) return reject('Structural stop outside risk bounds');
   const direction=side===1?'LONG':'SHORT';let exact;
-  try{exact=exactLevels(price,stop,(h4Led?[1.5,2.5,3.5]:[1,2,3]).map(r=>price+side*risk*r),direction,market.tickSize);}catch(e){return reject(e.message);}
+  try{exact=exactLevels(price,stop,[1.5,2.5,3.5].map(r=>price+side*risk*r),direction,market.tickSize);}catch(e){return reject(e.message);}
   const targets=exact.targets;
   if(targets.some(t=>t<=0)||stop<=0) return reject('Invalid price levels');
   if(exact.riskPct<.004||exact.riskPct>.05)return reject('Rounded structural stop outside risk bounds');
   const pnl=scenarios(exact.entry,exact.stop,targets,direction);
   if(pnl.targets[1].netBeforeFundingUsd / Math.abs(pnl.stop.netBeforeFundingUsd)<1.6) return reject('Net reward/risk too low');
   const firstTargetNetRR=pnl.targets[0].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd);
-  if(h4Led&&firstTargetNetRR<1.2)return reject('Net TP1/stop reward-risk below 1.2');
+  if(firstTargetNetRR<1.2)return reject('Net TP1/stop reward-risk below 1.2');
   const score=Math.min(100,75+Math.min(10,(volumeRatio-1.2)*10)+Math.min(8,Math.abs(h4.fast-h4.slow)/h4.atr*3)+Math.min(7,Math.max(0,market.oiChange)*100));
   if(score<80) return reject('Quality score below 80/100');
   const lower=Math.min(exact.stop,targets[0]),upper=Math.max(exact.stop,targets[0]);
-  return {eligible:true,symbol,family,primaryTimeframe:h4Led?'H4':'D1',entryTimeframe:'H1',targetR:h4Led?[1.5,2.5,3.5]:[1,2,3],model:MODEL,strategy,direction,score:Math.round(score),...exact,entryZone:[Math.max(lower,exact.entry-a*.15),Math.min(upper,exact.entry+a*.15)],pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:(h4Led?'H4-led trend (D1 context only)':'D1/H4 trend')+' + H1 '+strategy.toLowerCase().replace('trend_','')+' + volume + liquidity + derivatives',analysis:{indicators,firstTargetNetRR,dailyRole:h4Led?'CONTEXT_ONLY':'REQUIRED_ALIGNMENT',atrPct:a/price*100,netRewardRisk:pnl.targets[1].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd),triggerLevel:breakout?level:h1.fast,triggerAt:last[0],d1:indicators.D1.available?indicators.D1.trend:'UNAVAILABLE',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
+  return {eligible:true,symbol,family,primaryTimeframe:h4Led?'H4':'D1',entryTimeframe:'H1',targetR:[1.5,2.5,3.5],model:MODEL,strategy,direction,score:Math.round(score),...exact,entryZone:[Math.max(lower,exact.entry-a*.15),Math.min(upper,exact.entry+a*.15)],pnl,expectedPnlUsd:null,probability:null,horizonHours:48,entryValidUntil:now+3_600_000,candleAt:last[0],reason:(h4Led?'H4-led trend (D1 context only)':'D1/H4 trend')+' + H1 '+strategy.toLowerCase().replace('trend_','')+' + volume + liquidity + derivatives',analysis:{indicators,firstTargetNetRR,dailyRole:h4Led?'CONTEXT_ONLY':'REQUIRED_ALIGNMENT',atrPct:a/price*100,netRewardRisk:pnl.targets[1].netBeforeFundingUsd/Math.abs(pnl.stop.netBeforeFundingUsd),triggerLevel:breakout?level:h1.fast,triggerAt:last[0],d1:indicators.D1.available?indicators.D1.trend:'UNAVAILABLE',h4:side===1?'UP':'DOWN',h1:side===1?'UP':'DOWN',volumeRatio,atr:a,spreadBps:market.spreadBps,fundingRate:market.fundingRate,oiChange:market.oiChange,bookAt:market.bookAt,tradeAt:market.tradeAt},researchStatus:'RULE_BASED_UNVALIDATED'};
 }
 export function entryState(signal,market,now,ready) {
   if(signal.status!=='OPEN')return {actionable:false,reason:signal.invalidationReason||'Archived entry'};

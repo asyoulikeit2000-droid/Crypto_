@@ -90,3 +90,20 @@ test('H4-led rejects an unknown family rather than bypassing required alignment'
 test('market relay accepts one-letter bases and rejects malformed symbols',async()=>{
  const {validMarketSymbol}=await import('../cloudflare/free-market-relay.mjs');for(const s of ['SUSDT','WUSDT','BTCUSDT','1000PEPEUSDT'])assert.equal(validMarketSymbol(s),true);for(const s of ['USDT','btcUSDT','BTCUSDT&mode=bootstrap','BTC-USDT','A'.repeat(21)+'USDT'])assert.equal(validMarketSymbol(s),false);
 });
+
+test('both families qualify against the TP1 exit actually used by the journal',()=>{
+ for(const family of ['DAILY_ALIGNED','H4_LED'])for(const side of [1,-1]){
+  const {history,market}=setup(side);
+  const signal=evaluateMtf('BTCUSDT',history,market,history,now,{family});
+  assert.equal(signal.eligible,true,signal.reason);
+  assert.deepEqual(signal.targetR,[1.5,2.5,3.5]);
+  assert(signal.pnl.targets[0].netBeforeFundingUsd/Math.abs(signal.pnl.stop.netBeforeFundingUsd)>=1.2);
+  assert.equal(signal.model,'mtf_tp1_quality_v5');
+  // A tighter structural stop still passes the old TP2 test, but costs
+  // make TP1 inadequate. Neither family may bypass the actual-exit gate.
+  for(const r of history.H1.slice(-6)){if(side===1)r[3]+=.5;else r[2]-=.5;}
+  const rejected=evaluateMtf('BTCUSDT',history,market,history,now,{family});
+  assert.equal(rejected.eligible,false);
+  assert.match(rejected.reason,/Net TP1\/stop reward-risk below 1.2/);
+ }
+});
