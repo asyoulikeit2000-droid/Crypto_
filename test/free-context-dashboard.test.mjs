@@ -63,6 +63,16 @@ test('theme toggle changes its accessible action and is independent of entry ava
  const e=dashboard(false);assert.equal(e['theme-toggle']['aria-label'],'Switch to light mode');e['theme-toggle'].handlers.click();assert.equal(e['theme-toggle']['aria-label'],'Switch to dark mode');e['theme-toggle'].handlers.click();assert.equal(e['theme-toggle']['aria-label'],'Switch to light mode');assert.doesNotMatch(e.signals.innerHTML,/Entry review available/);
 });
 
+test('quality cards explain retained scope, small samples and size scaling',()=>{
+ const e=dashboard(false,0,0,sample=>{sample.simulationSummary={tp:2,stop:2,resolved:4,open:0,winRate:50,netPnlUsdt:-200,timeout:0,ambiguous:0,retainedPerformance:{count:4,profitFactor:.8,averagePnlUsdt:-50}};});
+ assert.match(e['simulation-metrics'].innerHTML,/Small sample; no proven edge/);
+ assert.match(e['simulation-metrics'].innerHTML,/0.80×/);
+ e.clickDetail('performance:4');assert.equal(e['detail-title'].textContent,'Retained profit factor');assert.match(e['detail-body'].innerHTML,/Archived receipts/);
+ e.clickDetail('performance:5');assert.match(e['detail-body'].innerHTML,/not statistical expected future profit/);
+ e.notional.value='30000';e.notional.handlers.input();assert.match(e['simulation-metrics'].innerHTML,/−100.00/);
+ assert.doesNotMatch(e.signals.innerHTML,/Entry review available/);
+});
+
 test('H4 signal labels actual target multiples and daily context; strategy results stay separate',()=>{
  const e=dashboard(false,0,0,sample=>{const s=sample.signals[0];s.family='H4_LED';s.targetR=[1.5,2.5,3.5];sample.review=[{symbol:s.symbol,eligible:false,reason:'No volume-confirmed trigger',strategyReviews:[{family:'DAILY_ALIGNED',eligible:false,reason:'D1/H4/H1 trends disagree'},{family:'H4_LED',eligible:false,reason:'No volume-confirmed trigger'}]}];sample.strategyPerformance=[{family:'DAILY_ALIGNED',tp:0,stop:1,open:0,winRate:0,netPnlUsdt:-728.27},{family:'H4_LED',tp:0,stop:0,open:0,winRate:null,netPnlUsdt:0}];});
  assert.match(e.signals.innerHTML,/H4-led · daily context only/);assert.match(e.signals.innerHTML,/TP1 · ~1.5R/);assert.match(e.signals.innerHTML,/TP3 · ~3.5R/);e.clickMarket('BTCUSDT');assert.match(e['market-detail'].innerHTML,/Daily-aligned/);assert.match(e['market-detail'].innerHTML,/H4-led \/ H1 entry/);e.clickDetail('performance:0');assert.match(e['detail-body'].innerHTML,/By strategy family/);assert.match(e['detail-body'].innerHTML,/Daily-aligned/);

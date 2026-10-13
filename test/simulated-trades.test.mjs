@@ -1,8 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {initSimulation,advanceSimulation,simulationTotals,simulationView,SIM_NOTIONAL} from '../simulated-trades.mjs';
+import {initSimulation,advanceSimulation,simulationTotals,simulationView,SIM_NOTIONAL,retainedPerformance} from '../simulated-trades.mjs';
 const at=Date.UTC(2026,9,12,1),signal={id:'test',symbol:'BTCUSDT',entry:100,stop:98,targets:[102,104,106],direction:'LONG',createdAt:at,horizonHours:48};
 const bar=(t,o=100,h=101,l=99,c=100)=>[t,o,h,l,c,1,1];
+test('quality metrics expose unequal losses despite 50% wins and exclude open evidence',()=>{
+ const rows=[['TP1',200],['STOP',-400],['TIMEOUT',50],['OPEN',1000],['UNRESOLVED',1000]].map(([status,netPnlUsdt])=>({...signal,simulation:{status,netPnlUsdt,closedAt:at+60000}}));
+ const result=retainedPerformance(rows);
+ assert.equal(result.count,3);assert.equal(result.profitFactor,.625);assert.equal(result.averagePnlUsdt,-50);
+ const total=simulationTotals(rows,{tp:10,stop:10,netPnlUsdt:123});
+ assert.equal(total.winRate,50);assert.equal(total.netPnlUsdt,-27);
+ assert.deepEqual(total.retainedPerformance,result); // archived gain/loss components cannot be inferred
+});
+test('quality metrics never claim infinite profit factor or manufactured zero-trade expectancy',()=>{
+ const empty=retainedPerformance([]);assert.equal(empty.profitFactor,null);assert.equal(empty.averagePnlUsdt,null);assert.equal(empty.noLosses,false);
+ const win=retainedPerformance([{...signal,simulation:{status:'TP1',netPnlUsdt:200}}]);assert.equal(win.profitFactor,null);assert.equal(win.noLosses,true);assert.equal(win.averagePnlUsdt,200);
+ const missing=retainedPerformance([{...signal,simulation:{status:'STOP',netPnlUsdt:null}}]);assert.equal(missing.count,0);
+});
 test('assumes 15000 notional and closes the full position at first TP, after fees',()=>{
  const sim=advanceSimulation(signal,[bar(at,100,103,99,102)],at+60000);assert.equal(SIM_NOTIONAL,15000);assert.equal(sim.status,'TP1');assert.equal(sim.exit,102);assert.ok(Math.abs(sim.netPnlUsdt-278.79)<1e-8);assert.equal(sim.assumedEntry,100);
  const later=advanceSimulation({...signal,simulation:sim},[bar(at+60000,100,101,95,96)],at+120000);assert.deepEqual(later,sim);
