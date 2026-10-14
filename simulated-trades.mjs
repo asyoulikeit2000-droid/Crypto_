@@ -43,3 +43,11 @@ export function simulationView(signal,market,now){
  const marked=s.status==='OPEN'&&fresh&&Number.isFinite(market?.price)&&market.price>0;
  return {...s,markPrice:marked?market.price:null,markAt:marked?market.receivedAt:null,markPnlUsdt:marked?scenarios(signal.entry,market.price,[],signal.direction,SIM_NOTIONAL).stop.netBeforeFundingUsd:null,catchingUp:s.status==='OPEN'&&(!s.checkedThrough||now-s.checkedThrough>120000),simulated:true};
 }
+
+// Archives lack model attribution: report retained receipts only, without guessing.
+export function modelPerformance(signals,currentModel){
+ const groups=new Map();
+ for(const signal of signals){const model=typeof signal.model==='string'&&signal.model?signal.model:'UNKNOWN';if(!groups.has(model))groups.set(model,[]);groups.get(model).push(signal);}
+ if(!groups.has(currentModel))groups.set(currentModel,[]);
+ return [...groups].sort(([a],[b])=>a===currentModel?-1:b===currentModel?1:a.localeCompare(b)).map(([model,rows])=>({model,current:model===currentModel,scope:'RETAINED_RECEIPTS_ONLY',evidenceStatus:'RULE_BASED_UNVALIDATED',...simulationTotals(rows)}));
+}

@@ -4,14 +4,14 @@
 
 ## Scan and strategies
 
-Model `mtf_h4_dual_v4` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
+Model `mtf_tp1_quality_v5` scans up to 30 liquid Bybit USDT crypto perpetuals, at least $50m daily turnover. Stocks, commodities, forex and stablecoins are excluded. Instruments provide the exchange tick size; missing price rules block qualification.
 
 The daily-aligned family requires 200+ continuous, current, closed H1/H4/D1 candles; EMA20/50 direction and slope alignment; altcoin alignment with BTC; fresh book/trade/receipt times <=90 seconds; spread <=6 bps; funding absolute rate <=0.05%; and fresh open interest with roughly one-hour change >=-1.5%.
 
 - Trend breakout: a directional H1 close outside the prior 20-bar extreme, volume >=1.2 times the prior mean.
 - Trend pullback: the same higher-timeframe trend, a recent touch of H1 EMA20, a directional recovery above/below the previous close and EMA20 within one ATR, and the same volume threshold.
 
-Structural six-bar stop plus 0.2 ATR buffer; stop distance 0.4–5%, at least 1.2 ATR. Entry rounds toward the adverse fill direction, stop away from entry, targets conservatively toward entry. Recheck rounded risk and net TP2/stop scenario >=1.6 after modeled costs. Score >=80 ranks technical agreement and is never a win probability. TP1/TP2/TP3 approximate 1R/2R/3R after rounding.
+Structural six-bar stop plus 0.2 ATR buffer; stop distance 0.4–5%, at least 1.2 ATR. Entry rounds toward the adverse fill direction, stop away from entry, targets conservatively toward entry. Recheck rounded risk and net TP2/stop scenario >=1.6 after modeled costs. Score >=80 ranks technical agreement and is never a win probability. New TP1/TP2/TP3 targets approximate 1.5R/2.5R/3.5R after rounding; both families require net TP1/stop >=1.2 after modeled costs.
 
 No daily/batch cap, per-day asset cap or global one-hour cooldown. Each distinct qualifying closed-H1 trigger may publish, with one active simulated position per symbol. Persistent trigger watermarks prevent repeats across restarts and archived history; a symbol can qualify on a new trigger once its prior simulation closes. The entry window is at most one hour and is shortened before an upcoming event blackout. A stale feed, failed checkpoint, missing context, expired window or price outside the narrow entry zone prevents actionable status. Observed price reaching stop or TP1 cancels the entry and is not a tracked trade outcome. Intracycle excursions may be missed; users must independently check the current market and their own fills.
 
@@ -86,3 +86,7 @@ Rollback to a prior Free/manual release only; legacy writers consume excessive r
 Only newly committed signals produce an outbox event. Each delivery rechecks live actionable status; old/expired/invalidated signals cannot notify. Events expire after three minutes or the entry-window end, whichever comes first; transient failures retry within that window, revoked subscriptions are removed on the next checkpoint. Durable outbox acknowledgments and service-worker IndexedDB suppress duplicate IDs across restarts. No dashboard caching or offline entry advice is introduced. Alerts include entry, stop and targets, with a reminder to recheck the dashboard; they do not guarantee execution or device delivery.
 
 Use **Enable notifications** on each device and grant permission. Keep the page open until it confirms registration (up to three minutes); it may then close. iPhone/iPad requires a Home Screen web app and a supported OS/browser. Browser/system permissions, network access, power management and push-service availability affect delivery. **Test device notification** is explicitly a local display test, not a server-to-device delivery test. **Disable notifications** unsubscribes the browser immediately and queues authenticated checkpoint removal. No paid notification provider is required.
+
+## Model-version review
+
+Dashboard performance details separate retained receipts by exact model version and identify the current model. Missing attribution is UNKNOWN. Archived outcomes remain in overall/family totals but are excluded from model cohorts because model attribution was not retained. Open, unresolved and timeout outcomes do not enter target/stop win rate. No-loss samples have no finite profit factor; small samples do not validate a strategy. This reporting does not change qualification or promote models automatically.
