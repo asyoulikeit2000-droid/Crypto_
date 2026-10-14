@@ -72,13 +72,24 @@ function renderSimulations(n,now,offline){
  const metrics=[['Simulated win rate',summary.winRate==null?'—':summary.winRate.toFixed(1)+'%',summary.resolved+' TP/stop outcomes · '+(summary.resolved<30?'Small sample; no proven edge':summary.ambiguous+' conservative ties'),'violet'],['Realized simulation P&L',amount(summary.netPnlUsdt*scale),summary.tp+' TP1 · '+summary.stop+' stop · '+summary.timeout+' timeout',summary.netPnlUsdt>=0?'mint':'rose'],['Open mark-to-market',offline?'Unavailable':live.length?amount(openPnl):'—',live.length+' fresh marks / '+summary.open+' open · provisional','blue'],['Assumed trade size',n.toLocaleString()+' USDT','Full position · no leverage','amber'],['Retained profit factor',finite(quality.profitFactor)?Number(quality.profitFactor).toFixed(2)+'×':quality.noLosses?'No losses yet':'—',(quality.count||0)+' completed receipts · gains ÷ losses','mint'],['Retained avg. P&L',finite(quality.averagePnlUsdt)?amount(quality.averagePnlUsdt*scale):'—','Per completed receipt · descriptive only',quality.averagePnlUsdt>=0?'blue':'rose']];
  updateSummaryCards('simulation-metrics',metrics.map(([label,value,note,cls],i)=>`<button type="button" class="performance-card ${cls}" data-detail="performance:${i}" aria-haspopup="dialog" aria-label="${esc(label)} summary and details"><small>${esc(label)}</small><strong>${esc(value)}</strong><span>${esc(note)}</span><em>View details ↗</em></button>`).join(''));
  const rows=[...data.signals].sort((a,b)=>b.createdAt-a.createdAt);
- $('simulation-trades').innerHTML=rows.map(s=>{
+ const tradeRows=rows.map(s=>{
   const sim=s.simulation||{status:'OPEN',reason:'Waiting for persisted minute-candle recovery'},closed=['TP1','STOP','TIMEOUT'].includes(sim.status);
   const fresh=!offline&&finite(sim.markPnlUsdt)&&sim.markAt&&now-sim.markAt<=90000&&sim.markAt<=now+5000;
   const pnl=closed?sim.netPnlUsdt*scale:fresh?sim.markPnlUsdt*scale:null;
   const text=sim.status==='TP1'?'TP1 HIT · SIMULATED WIN':sim.status==='STOP'?'STOP LOSS HIT':sim.status==='TIMEOUT'?'TIMEOUT':sim.status==='UNRESOLVED'?'UNRESOLVED':sim.catchingUp?'OPEN · RECOVERING':'SIMULATED OPEN';
   return `<tr><td><button type="button" class="trade-open" data-detail="trade:${esc(s.id)}" aria-haspopup="dialog" aria-label="${esc(s.symbol)} trade summary and details"><strong>${esc(s.symbol)}</strong><small>${esc(date(s.createdAt))}</small><em>View trade ↗</em></button></td><td class="${s.direction==='LONG'?'good':'warn'}">${esc(s.direction)}</td><td>${price(s.entry)}</td><td><span class="outcome ${sim.status==='TP1'?'win':sim.status==='STOP'?'loss':'pending'}">${esc(text)}</span></td><td>${price(closed?sim.exit:fresh?sim.markPrice:null)}${sim.closedAt?'<small>'+esc(date(sim.closedAt))+' · minute end</small>':''}</td><td class="${pnl==null?'muted':pnl>=0?'good':'bad'}">${pnl==null?'Unavailable':amount(pnl)}${!closed&&pnl!=null?'<small>Provisional mark · '+esc(date(sim.markAt))+'</small>':''}</td><td class="evidence-cell">${esc(sim.reason)}${sim.checkedThrough?'<small>Candles through '+esc(date(sim.checkedThrough))+'</small>':''}</td></tr>`;
- }).join('')||'<tr><td colspan="7" class="empty">The next published signal will start an assumed trade automatically. No qualifying signal, no invented trade.</td></tr>';
+ });
+ const empty='<tr><td colspan="7" class="empty">No retained hypothetical trades to display.</td></tr>';
+ $('simulation-trades').innerHTML=tradeRows.join('')||empty;
+ const grouped=$('trade-summary-rows');
+ if(grouped){
+  let previousDay=null;
+  grouped.innerHTML=rows.map((s,i)=>{
+   const day=new Date(s.createdAt+14400000).toISOString().slice(0,10);
+   const heading=day!==previousDay?'<tr class="trade-date-divider"><th scope="rowgroup" colspan="7">'+esc(new Date(s.createdAt).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',weekday:'long',day:'numeric',month:'long',year:'numeric'}))+' · Dubai</th></tr>':'';
+   previousDay=day;return heading+tradeRows[i];
+  }).join('')||empty;
+ }
  $('simulation-note').textContent='Win rate = TP1 hits ÷ (TP1 hits + stops). Unresolved entry ordering and timeouts are excluded; same-minute TP/stop ties count as stops. '+summary.unresolved+' unresolved. Detailed rows retain up to seven days and 170 receipts; completed older receipts may archive sooner. Saved aggregate results include archived trades. All results use the size above. Open marks may move while candle recovery is pending; stale prices show Unavailable.';
 }
 function renderDetail(){
@@ -146,7 +157,7 @@ $('market-close').addEventListener('click',()=>$('market-dialog').close());
 $('market-dialog').addEventListener('close',()=>{selectedSymbol=null;render();});
 $('notional').addEventListener('input',render);refresh();setInterval(refresh,15000);setInterval(render,1000);
 
-for(const id of ['health','simulation-metrics','simulation-trades','signal-rows','market-detail'])$(id)?.addEventListener('click',e=>{const button=e.target.closest('[data-detail]');if(button)openDetail(button.dataset.detail);});
+for(const id of ['health','simulation-metrics','simulation-trades','trade-summary-rows','signal-rows','market-detail'])$(id)?.addEventListener('click',e=>{const button=e.target.closest('[data-detail]');if(button)openDetail(button.dataset.detail);});
 $('detail-close').addEventListener('click',()=>$('detail-dialog').close());
 $('detail-dialog').addEventListener('close',()=>{selectedDetail=null;});
 $('theme-toggle').addEventListener('click',()=>applyTheme(document.documentElement.dataset.theme==='light'?'dark':'light'));
