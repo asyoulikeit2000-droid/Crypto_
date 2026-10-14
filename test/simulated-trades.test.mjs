@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {initSimulation,advanceSimulation,simulationTotals,simulationView,SIM_NOTIONAL,retainedPerformance} from '../simulated-trades.mjs';
+import {initSimulation,advanceSimulation,simulationTotals,simulationView,SIM_NOTIONAL,retainedPerformance,modelPerformance} from '../simulated-trades.mjs';
 const at=Date.UTC(2026,9,12,1),signal={id:'test',symbol:'BTCUSDT',entry:100,stop:98,targets:[102,104,106],direction:'LONG',createdAt:at,horizonHours:48};
 const bar=(t,o=100,h=101,l=99,c=100)=>[t,o,h,l,c,1,1];
 test('quality metrics expose unequal losses despite 50% wins and exclude open evidence',()=>{
@@ -45,4 +45,10 @@ test('aggregate win rate includes archived resolved outcomes, excludes open/unkn
 test('live mark uses position size and stale feeds remove mark availability, not closed outcomes',()=>{
  const market={price:101,bookAt:at,tradeAt:at,receivedAt:at};const sim=simulationView(signal,market,at+1000);assert.ok(sim.markPnlUsdt>0);assert.equal(sim.catchingUp,true);assert.equal(simulationView(signal,market,at+91000).markPnlUsdt,null);
  const closed=advanceSimulation(signal,[bar(at,100,103,99,102)],at+60000);assert.ok(Math.abs(simulationView({...signal,simulation:closed},market,at+91000).netPnlUsdt-278.79)<1e-8);
+});
+
+test('model cohorts isolate old losses, current opens and unknown attribution',()=>{
+ const rows=[{model:'old',simulation:{status:'STOP',netPnlUsdt:-400}},{model:'new',simulation:{status:'TP1',netPnlUsdt:200}},{model:'new',simulation:{status:'OPEN'}},{simulation:{status:'UNRESOLVED'}}];
+ const result=modelPerformance(rows,'new');assert.equal(result[0].model,'new');assert.equal(result[0].current,true);assert.equal(result[0].winRate,100);assert.equal(result[0].netPnlUsdt,200);assert.equal(result[0].open,1);assert.equal(result[0].scope,'RETAINED_RECEIPTS_ONLY');assert.equal(result.find(x=>x.model==='old').netPnlUsdt,-400);assert.equal(result.find(x=>x.model==='UNKNOWN').unresolved,1);
+ const empty=modelPerformance([],'new');assert.equal(empty.length,1);assert.equal(empty[0].winRate,null);assert.equal(empty[0].retainedPerformance.profitFactor,null);
 });

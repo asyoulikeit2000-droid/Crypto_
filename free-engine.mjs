@@ -1,6 +1,6 @@
 import {createPushAlerts,readPushBody} from './push-alerts.mjs';
 import {compactSignalLedger} from './signal-ledger.mjs';
-import {initSimulation,advanceSimulation,simulationTotals,simulationView} from './simulated-trades.mjs';
+import {initSimulation,advanceSimulation,simulationTotals,simulationView,modelPerformance} from './simulated-trades.mjs';
 import {createVenueContext,venueGate} from './free-venue-context.mjs';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
@@ -149,7 +149,7 @@ const server=http.createServer(async(req,res)=>{
   // Explicit liveness is distinct from readiness: a quota-blocked engine remains
   // available to explain its state and recover, without calling itself healthy.
   if(url.pathname==='/api/live')return json({ok:true,profile:'free_mtf',ready:status().ok});
-  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),simulationSummary:simulationTotals(published?.signals||[],published?.simulationArchive),strategyPerformance:strategyPerformance(),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis,family,strategyReviews})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis,family,strategyReviews}))});
+  if(url.pathname==='/api/dashboard')return json({health:status(),signals:displayedSignals(),simulationSummary:simulationTotals(published?.signals||[],published?.simulationArchive),strategyPerformance:strategyPerformance(),modelPerformance:modelPerformance(published?.signals||[],MODEL),context:context.status(),venueContext:venueContext.status(),review:runtime.review.map(({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis,family,strategyReviews})=>({symbol,eligible,technicalEligible,reason,score,strategy,coverageTier,venue,analysis,family,strategyReviews}))});
   if(url.pathname==='/api/signals')return json(displayedSignals());
   if(url.pathname==='/api/paper-trades')return json({enabled:true,simulated:true,trades:displayedSignals().map(s=>({id:s.id,symbol:s.symbol,direction:s.direction,entry:s.entry,stop:s.stop,targets:s.targets,createdAt:s.createdAt,simulation:s.simulation})),summary:simulationTotals(published?.signals||[],published?.simulationArchive)});
   if(url.pathname==='/api/market')return json(status().markets);
