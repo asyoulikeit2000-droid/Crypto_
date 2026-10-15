@@ -46,3 +46,18 @@ test('live mark uses position size and stale feeds remove mark availability, not
  const market={price:101,bookAt:at,tradeAt:at,receivedAt:at};const sim=simulationView(signal,market,at+1000);assert.ok(sim.markPnlUsdt>0);assert.equal(sim.catchingUp,true);assert.equal(simulationView(signal,market,at+91000).markPnlUsdt,null);
  const closed=advanceSimulation(signal,[bar(at,100,103,99,102)],at+60000);assert.ok(Math.abs(simulationView({...signal,simulation:closed},market,at+91000).netPnlUsdt-278.79)<1e-8);
 });
+
+test('model cohorts separate versions and families without attributing archived results',()=>{
+ const receipt=(model,family,status,pnl)=>({...signal,model,family,simulation:{status,netPnlUsdt:pnl}});
+ const rows=[receipt('v4','DAILY_ALIGNED','STOP',-400),receipt('v5','DAILY_ALIGNED','TP1',200),receipt('v5','H4_LED','TIMEOUT',-20),receipt('v5','H4_LED','OPEN',999),receipt(undefined,undefined,'UNRESOLVED',999)];
+ const total=simulationTotals(rows,{tp:100,stop:100,netPnlUsdt:2000});
+ const cohorts=total.modelPerformance;
+ assert.equal(cohorts.length,4);
+ const latest=cohorts.find(x=>x.model==='v5'&&x.family==='DAILY_ALIGNED');
+ assert.equal(latest.resolved,1);assert.equal(latest.winRate,100);assert.equal(latest.performance.averagePnlUsdt,200);
+ const h4=cohorts.find(x=>x.model==='v5'&&x.family==='H4_LED');
+ assert.equal(h4.published,2);assert.equal(h4.resolved,0);assert.equal(h4.winRate,null);assert.equal(h4.performance.count,1);assert.equal(h4.performance.averagePnlUsdt,-20);
+ assert.equal(cohorts.find(x=>x.model==='UNKNOWN_LEGACY').family,'DAILY_ALIGNED');
+ assert.equal(cohorts.reduce((n,x)=>n+x.resolved,0),2);assert.equal(total.resolved,202);
+ assert.deepEqual(simulationTotals([]).modelPerformance,[]);
+});
