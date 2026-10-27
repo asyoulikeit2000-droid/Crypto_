@@ -1,6 +1,6 @@
 export const MODEL = 'mtf_tp1_quality_v5';
 export const INTERVALS = {H1: 3_600_000, H4: 14_400_000, D1: 86_400_000};
-export const DAILY_CAP = null; // No arbitrary daily publication cap.
+export const DAILY_CAP = 5; // Strict Dubai-day publication ceiling.
 export const FEE_RATE = 0.00055;
 export const SLIPPAGE_RATE = 0.00015;
 const finite = v => v !== null && v !== '' && Number.isFinite(Number(v));
@@ -111,18 +111,21 @@ export function invalidateEntry(signal,market,now) {
   if(side*(market.price-signal.stop)<=0||side*(market.price-signal.targets?.[0])>=0)return {...signal,status:'INVALIDATED',invalidatedAt:now,invalidationReason:'Observed stop or TP1 reached; entry cancelled (not a tracked trade outcome)'};
   return signal;
 }
-export function selectSetups(candidates, signals, now, {triggerWatermarks={}}={}) {
+export function selectSetups(candidates, signals, now, {triggerWatermarks={},archivedPublicationsByDay={}}={}) {
+  const today=reviewDay(now);
+  let remaining=Math.max(0,DAILY_CAP-signals.filter(s=>reviewDay(s.createdAt)===today).length-Number(archivedPublicationsByDay[today]||0));
   const seen=new Map(Object.entries(triggerWatermarks));
   const active=new Set();
   for(const s of signals){
     if(Number.isFinite(s.candleAt))seen.set(s.symbol,Math.max(Number(seen.get(s.symbol)||0),s.candleAt));
-    if(s.simulation?.status==='OPEN'||!s.simulation&&s.status==='OPEN'&&s.entryValidUntil>now)active.add(s.symbol);
+    if(s.status==='OPEN'&&s.entryValidUntil>now)active.add(s.symbol);
   }
   const selected=[];
   for(const c of candidates.filter(c=>c.eligible).sort((a,b)=>b.score-a.score||a.symbol.localeCompare(b.symbol))){
+    if(remaining<=0)break;
     if(active.has(c.symbol)||!Number.isFinite(c.candleAt)||c.candleAt<=Number(seen.get(c.symbol)||0))continue;
     selected.push({...c,id:`${MODEL}:${c.symbol}:${c.candleAt}:${c.direction}`,createdAt:now,status:'OPEN',day:reviewDay(now)});
-    seen.set(c.symbol,c.candleAt);active.add(c.symbol);
+    seen.set(c.symbol,c.candleAt);active.add(c.symbol);remaining--;
   }
   return selected;
 }
