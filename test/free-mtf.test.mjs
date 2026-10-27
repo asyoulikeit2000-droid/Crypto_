@@ -9,13 +9,17 @@ function setup(side=1){const history=Object.fromEntries(Object.keys(INTERVALS).m
 test('closed candles discard incomplete candles and require continuous, current histories',()=>{const b=bars('H1');assert.equal(candleCoverage(b,'H1',now),true);const open=[Math.floor(now/3600000)*3600000,1,2,.5,1,1,1];assert.equal(closedCandles([...b,open],'H1',now).length,220);assert.equal(candleCoverage(b.filter((_,i)=>i!==100),'H1',now),false);assert.equal(candleCoverage(b,'H1',now+3600000),false);});
 test('stale trade, stale book and future event all block independently',()=>{assert.equal(freshness({bookAt:now,tradeAt:now-91000,receivedAt:now},now).fresh,false);assert.equal(freshness({bookAt:now+6000,tradeAt:now,receivedAt:now},now).fresh,false);assert.equal(freshness({bookAt:now-91000,tradeAt:now,receivedAt:now},now).fresh,false);});
 test('MTF requires aligned closed history and derivatives, rejects missing and weak input',()=>{const {history,market}=setup();assert.equal(evaluateMtf('BTCUSDT',history,{...market,fundingRate:null},history,now).eligible,false);assert.equal(evaluateMtf('BTCUSDT',history,{...market,tradeAt:now-100000},history,now).eligible,false);assert.equal(evaluateMtf('BTCUSDT',{...history,D1:[]},market,history,now).eligible,false);assert.equal(evaluateMtf('BTCUSDT',history,{...market,oiChange:null},history,now).eligible,false);});
-test('all qualifying assets publish without daily, batch or global spacing limits',()=>{
+test('publishes at most five opportunities per Dubai day, then resets next day',()=>{
  const candidates=Array.from({length:30},(_,i)=>({eligible:true,symbol:'S'+i,score:90-i,direction:'LONG',candleAt:now,entryValidUntil:now+3600000}));
- const signals=selectSetups(candidates,[],now);assert.equal(signals.length,30);
- assert.equal(selectSetups([{...candidates[0],symbol:'NEW',candleAt:now+60000}],signals,now+60000).length,1);
- const completed=signals.map(s=>({...s,simulation:{status:'TP1'}}));assert.equal(selectSetups(candidates,JSON.parse(JSON.stringify(completed)),now+3600000).length,0);
- assert.equal(selectSetups(candidates.map(c=>({...c,candleAt:now+3600000})),completed,now+3600000).length,30);
- const open=signals.map(s=>({...s,simulation:{status:'OPEN'}}));assert.equal(selectSetups(candidates.map(c=>({...c,candleAt:now+3600000})),open,now+3600000).length,0);
+ const signals=selectSetups(candidates,[],now);
+ assert.equal(signals.length,5);
+ assert.deepEqual(signals.map(s=>s.symbol),['S0','S1','S2','S3','S4']);
+ assert.equal(selectSetups([{...candidates[5],candleAt:now+60000}],signals,now+60000).length,0);
+ assert.equal(selectSetups(candidates,[],now,{archivedPublicationsByDay:{[reviewDay(now)]:5}}).length,0);
+ assert.equal(selectSetups(candidates,[],now,{archivedPublicationsByDay:{[reviewDay(now)]:4}}).length,1);
+ const nextDay=now+12*3600000;
+ const fresh=candidates.map(c=>({...c,candleAt:nextDay,entryValidUntil:nextDay+3600000}));
+ assert.equal(selectSetups(fresh,signals,nextDay).length,5);
  assert.notEqual(reviewDay(Date.UTC(2026,9,4,19,59)),reviewDay(Date.UTC(2026,9,4,20)));
 });
 test('archived trigger watermarks and duplicate candidate families cannot repeat entries',()=>{
