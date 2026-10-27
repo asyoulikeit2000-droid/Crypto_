@@ -32,8 +32,8 @@ async function universe() {
   const valid=new Set(j.info.filter(i=>i.status==='Trading'&&i.quoteCoin==='USDT'&&i.contractType==='LinearPerpetual'&&['','innovation'].includes(i.symbolType||'')&&!/^(USDC|USDE|DAI|TUSD|FDUSD|USDD|BUSD)USDT$/.test(i.symbol)).map(i=>i.symbol));
   const ranked=j.tickers.filter(t=>valid.has(t.symbol)&&Number(t.turnover24h)>=50_000_000).sort((a,b)=>Number(b.turnover24h)-Number(a.turnover24h)).map(t=>t.symbol);
   // Keep open setups covered even when their asset drops out of the liquid universe.
-  const open=working.signals.filter(s=>s.entryValidUntil>Date.now()||s.status==='OPEN').map(s=>s.symbol);
-  working.symbols=[...new Set([...open,...['BTCUSDT','ETHUSDT'].filter(s=>ranked.includes(s)),...ranked])].slice(0,20);
+  // Only scan the 20 highest-turnover eligible contracts; retained old entries are history only.
+  working.symbols=ranked.slice(0,20);
   working.histories=Object.fromEntries(Object.entries(working.histories).filter(([s])=>working.symbols.includes(s)));
   lastUniverse=Date.now();
 }
@@ -109,7 +109,7 @@ async function cycle() {
   } catch(e){error(e);if(e.conflict)runtime.recovered=false;}finally{busy=false;}
 }
 const routes={'/':'free.html','/free-app.js':'free-app.js','/free.css':'free.css','/push-app.js':'push-app.js','/sw.js':'sw.js','/manifest.webmanifest':'manifest.webmanifest','/app-icon.svg':'app-icon.svg'};
-function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);return {...s,entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
+function displayedSignals(){const h=status(),now=Date.now(),c=context.status(),v=venueContext.status();return (published?.signals||[]).map(saved=>{const pending=working.signals.find(x=>x.id===saved.id);const s=invalidateEntry(pending?.status==='INVALIDATED'?{...saved,status:pending.status,invalidationReason:pending.invalidationReason}:saved,runtime.market[saved.symbol],now);const gate=venueGate(contextGate({...s,eligible:true},c,now,{allowTechnicalSignals:s.coverageTier==='TECHNICAL_CONTEXT'}),runtime.market[s.symbol],v,now),entryStatus=entryState(s,runtime.market[s.symbol],now,h.ok&&gate.eligible&&!!s.context);const {simulation,...manualSignal}=s;return {...manualSignal,entryStatus,contextBlock:gate.eligible?null:gate.reason};});}
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const json=(data,code=200)=>{res.writeHead(code,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data));};
